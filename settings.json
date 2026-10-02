@@ -5,5 +5,7 @@
     "npm:pi-config-sync",
     "npm:pi-toggle-skills",
     "npm:pi-opencode-theme"
-  ]
+  ],
+  "theme": "opencode",
+  "tuiMode": "fullscreen"
 }
