@@ -5,7 +5,8 @@
     "npm:pi-config-sync",
     "npm:pi-toggle-skills",
     "npm:pi-subagents",
-    "npm:pi-web-access"
+    "npm:pi-web-access",
+    "npm:pi-modes"
   ],
   "theme": "opencode",
   "tuiMode": "fullscreen",
