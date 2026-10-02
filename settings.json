@@ -14,5 +14,6 @@
   "enabledModels": [
     "opencode/deepseek-v4.1-flash",
     "opencode/deepseek-v4-pro"
-  ]
+  ],
+  "showCacheMissNotices": true
 }
