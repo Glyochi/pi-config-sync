@@ -1,0 +1,7 @@
+{
+  "defaultProvider": "opencode",
+  "defaultModel": "kimi-k2.6",
+  "packages": [
+    "npm:pi-config-sync"
+  ]
+}
