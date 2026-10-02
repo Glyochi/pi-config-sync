@@ -6,6 +6,6 @@
     "npm:pi-toggle-skills",
     "npm:pi-opencode-theme"
   ],
-  "theme": "opencode",
+  "theme": "neon-green",
   "tuiMode": "fullscreen"
 }
