@@ -8,7 +8,7 @@
     "npm:pi-web-access",
     "npm:pi-modes"
   ],
-  "theme": "opencode",
+  "theme": "neon-green",
   "tuiMode": "fullscreen",
   "hideThinkingBlock": true,
   "enabledModels": [
