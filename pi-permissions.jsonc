@@ -1,0 +1,80 @@
+{
+  // Global pi-permission-system policy.
+  //
+  // Resolution layers, lowest to highest precedence:
+  //   global policy < project policy < global agent frontmatter < project agent frontmatter
+  // Wildcard sections use last-matching-rule-wins, so broad rules are listed first.
+  //
+  // Strict default: read-only tools are allowed, every mutation and shell command
+  // asks, and a few destructive commands are hard-denied. In Build mode use YOLO
+  // (/permission-system) when you want asks auto-approved; YOLO never relaxes deny.
+
+  "defaultPolicy": {
+    "tools": "ask",
+    "bash": "ask",
+    "mcp": "ask",
+    "skills": "ask",
+    "special": "ask"
+  },
+
+  "tools": {
+    "*": "ask",
+
+    // Read-only built-ins.
+    "read": "allow",
+    "grep": "allow",
+    "find": "allow",
+    "ls": "allow",
+
+    // File mutators: one entry per registered tool name.
+    "write": "ask",
+    "edit": "ask",
+    "replace": "ask",
+    "insert": "ask",
+    "undo_last_change": "ask",
+
+    // pi-plan-build lifecycle tools plus its optional question tool.
+    "plan_*": "allow",
+    "question": "allow",
+
+    // Non-filesystem tools.
+    "task": "allow",
+    "webfetch": "allow",
+    "websearch": "allow"
+  },
+
+  "bash": {
+    "*": "ask",
+
+    // Exact-match read-only commands only. Wildcard allows such as "git log*"
+    // would also match chained commands ("git log; rm -rf /") because patterns
+    // are matched against the whole command string.
+    "git status": "allow",
+    "git status -s": "allow",
+    "git status --short": "allow",
+    "git diff": "allow",
+    "git diff --stat": "allow",
+    "git log": "allow",
+    "git branch": "allow",
+    "ls": "allow",
+    "pwd": "allow",
+
+    // Deny floors. YOLO does not relax these.
+    "rm -rf *": "deny",
+    "rm -fr *": "deny",
+    "rm -r *": "deny",
+    "git push*": "deny",
+    "git reset --hard*": "deny",
+    "git clean -*": "deny",
+    "sudo *": "deny"
+  },
+
+  "skills": {
+    "*": "ask"
+  },
+
+  "special": {
+    "doom_loop": "ask",
+    "external_directory": "ask"
+  }
+}

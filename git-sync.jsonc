@@ -1,0 +1,5 @@
+{
+  // Extra paths to sync, on top of the built-in allowlist.
+  // pi-permissions.jsonc holds the global pi-permission-system policy.
+  "extraPaths": ["pi-permissions.jsonc"]
+}
