@@ -6,7 +6,8 @@
     "npm:pi-toggle-skills",
     "npm:pi-subagents",
     "npm:pi-web-access",
-    "npm:pi-modes"
+    "npm:pi-modes",
+    "npm:pi-undo-redo"
   ],
   "theme": "neon-green",
   "tuiMode": "fullscreen",
