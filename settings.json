@@ -6,9 +6,9 @@
     "npm:pi-toggle-skills",
     "npm:pi-subagents",
     "npm:pi-web-access",
-    "npm:pi-modes",
     "npm:pi-undo-redo",
-    "npm:pi-permission-system"
+    "npm:pi-permission-system",
+    "npm:@janvitos/pi-plan-build"
   ],
   "theme": "neon-green",
   "tuiMode": "fullscreen",
