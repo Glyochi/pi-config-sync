@@ -34,6 +34,9 @@
 !pi-permissions.jsonc
 !pi-permissions.jsonc/
 !pi-permissions.jsonc/**
+!keybindings.json
+!keybindings.json/
+!keybindings.json/**
 # hard denylist — re-ignored even inside allowed dirs
 **/logs/
 auth*

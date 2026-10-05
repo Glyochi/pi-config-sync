@@ -5,9 +5,10 @@
   //   global policy < project policy < global agent frontmatter < project agent frontmatter
   // Wildcard sections use last-matching-rule-wins, so broad rules are listed first.
   //
-  // Strict default: read-only tools are allowed, every mutation and shell command
-  // asks, and a few destructive commands are hard-denied. In Build mode use YOLO
-  // (/permission-system) when you want asks auto-approved; YOLO never relaxes deny.
+  // Intent: reading is free, changing is not. Read tools and read-only shell
+  // commands run without prompts; every write/edit/delete, and every chained,
+  // redirected, or substituted shell command, requires approval. A few
+  // destructive commands are hard-denied and cannot be relaxed by YOLO.
 
   "defaultPolicy": {
     "tools": "ask",
@@ -26,7 +27,8 @@
     "find": "allow",
     "ls": "allow",
 
-    // File mutators: one entry per registered tool name.
+    // File mutators: one entry per registered tool name. All stay "ask" so
+    // Markdown, permission, and config changes always need user approval.
     "write": "ask",
     "edit": "ask",
     "replace": "ask",
@@ -46,18 +48,58 @@
   "bash": {
     "*": "ask",
 
-    // Exact-match read-only commands only. Wildcard allows such as "git log*"
-    // would also match chained commands ("git log; rm -rf /") because patterns
-    // are matched against the whole command string.
-    "git status": "allow",
-    "git status -s": "allow",
-    "git status --short": "allow",
-    "git diff": "allow",
-    "git diff --stat": "allow",
-    "git log": "allow",
-    "git branch": "allow",
-    "ls": "allow",
+    // Read-only inspection commands.
+    "cat *": "allow",
+    "head *": "allow",
+    "tail *": "allow",
+    "grep *": "allow",
+    "rg *": "allow",
+    "ls *": "allow",
+    "wc *": "allow",
+    "stat *": "allow",
+    "file *": "allow",
+    "du *": "allow",
+    "df *": "allow",
+    "tree *": "allow",
     "pwd": "allow",
+    "which *": "allow",
+    "type *": "allow",
+    "env": "allow",
+    "printenv*": "allow",
+    "date*": "allow",
+
+    // Read-only git inspection. Branch listing uses exact safe forms so
+    // mutating variants such as "git branch -D" stay at "ask".
+    "git status*": "allow",
+    "git diff*": "allow",
+    "git log*": "allow",
+    "git show*": "allow",
+    "git rev-parse*": "allow",
+    "git ls-files*": "allow",
+    "git blame*": "allow",
+    "git remote -v": "allow",
+    "git branch": "allow",
+    "git branch -a": "allow",
+    "git branch -r": "allow",
+    "git branch -v": "allow",
+    "git branch -vv": "allow",
+    "git branch --list": "allow",
+    "git branch --show-current": "allow",
+
+    // Chaining, redirection, substitution, and write-through options still
+    // require approval. Declared after the allows so last-match-wins picks
+    // these instead of the read-only allow that also matches.
+    "*;*": "ask",
+    "*&&*": "ask",
+    "*&*": "ask",
+    "*||*": "ask",
+    "*|*": "ask",
+    "*`*": "ask",
+    "*$(*": "ask",
+    "*>*": "ask",
+    "*<*": "ask",
+    "*\n*": "ask",
+    "*--output=*": "ask",
 
     // Deny floors. YOLO does not relax these.
     "rm -rf *": "deny",
@@ -66,7 +108,10 @@
     "git push*": "deny",
     "git reset --hard*": "deny",
     "git clean -*": "deny",
-    "sudo *": "deny"
+    "sudo *": "deny",
+    "*sudo *": "deny",
+    "*mkfs*": "deny",
+    "*dd *of=/dev/*": "deny"
   },
 
   "skills": {
