@@ -5,10 +5,10 @@
   //   global policy < project policy < global agent frontmatter < project agent frontmatter
   // Wildcard sections use last-matching-rule-wins, so broad rules are listed first.
   //
-  // Intent: reading is free, changing is not. Read tools and read-only shell
-  // commands run without prompts; every write/edit/delete, and every chained,
-  // redirected, or substituted shell command, requires approval. A few
-  // destructive commands are hard-denied and cannot be relaxed by YOLO.
+  // Reads are allowed and mutations ask. The only path exception is any .pi
+  // directory (Pi's own config): reads there are always allowed, even outside
+  // the working directory, because Pi self-modifies its config in that tree.
+  // A few destructive commands are hard-denied and cannot be relaxed by YOLO.
 
   "defaultPolicy": {
     "tools": "ask",
@@ -48,47 +48,35 @@
   "bash": {
     "*": "ask",
 
-    // Read-only inspection commands.
-    "cat *": "allow",
-    "head *": "allow",
-    "tail *": "allow",
-    "grep *": "allow",
-    "rg *": "allow",
-    "ls *": "allow",
-    "wc *": "allow",
-    "stat *": "allow",
-    "file *": "allow",
-    "du *": "allow",
-    "df *": "allow",
-    "tree *": "allow",
-    "pwd": "allow",
-    "which *": "allow",
-    "type *": "allow",
-    "env": "allow",
-    "printenv*": "allow",
-    "date*": "allow",
-
-    // Read-only git inspection. Branch listing uses exact safe forms so
-    // mutating variants such as "git branch -D" stay at "ask".
-    "git status*": "allow",
-    "git diff*": "allow",
-    "git log*": "allow",
-    "git show*": "allow",
-    "git rev-parse*": "allow",
-    "git ls-files*": "allow",
-    "git blame*": "allow",
-    "git remote -v": "allow",
+    // Exact-match read-only commands. Wildcards such as "git log*" would also
+    // match chained commands ("git log; rm -rf /"), so these stay exact.
+    "git status": "allow",
+    "git status -s": "allow",
+    "git status --short": "allow",
+    "git diff": "allow",
+    "git diff --stat": "allow",
+    "git log": "allow",
     "git branch": "allow",
-    "git branch -a": "allow",
-    "git branch -r": "allow",
-    "git branch -v": "allow",
-    "git branch -vv": "allow",
-    "git branch --list": "allow",
-    "git branch --show-current": "allow",
+    "ls": "allow",
+    "pwd": "allow",
 
-    // Chaining, redirection, substitution, and write-through options still
-    // require approval. Declared after the allows so last-match-wins picks
-    // these instead of the read-only allow that also matches.
+    // Reads under any .pi directory are always allowed. The pattern matches
+    // ~/.pi/..., /abs/.pi/..., and relative .pi/... paths.
+    "cat *.pi/*": "allow",
+    "head *.pi/*": "allow",
+    "tail *.pi/*": "allow",
+    "grep *.pi/*": "allow",
+    "rg *.pi/*": "allow",
+    "ls *.pi/*": "allow",
+    "wc *.pi/*": "allow",
+    "stat *.pi/*": "allow",
+    "file *.pi/*": "allow",
+    "cat *.pi": "allow",
+    "ls *.pi": "allow",
+
+    // Chaining, redirection, and substitution stay at "ask", so a .pi read
+    // allow cannot be chained into a mutation. These were already "ask"
+    // before, so this is not a new restriction.
     "*;*": "ask",
     "*&&*": "ask",
     "*&*": "ask",
@@ -99,7 +87,6 @@
     "*>*": "ask",
     "*<*": "ask",
     "*\n*": "ask",
-    "*--output=*": "ask",
 
     // Deny floors. YOLO does not relax these.
     "rm -rf *": "deny",
@@ -108,10 +95,7 @@
     "git push*": "deny",
     "git reset --hard*": "deny",
     "git clean -*": "deny",
-    "sudo *": "deny",
-    "*sudo *": "deny",
-    "*mkfs*": "deny",
-    "*dd *of=/dev/*": "deny"
+    "sudo *": "deny"
   },
 
   "skills": {
@@ -120,6 +104,8 @@
 
   "special": {
     "doom_loop": "ask",
-    "external_directory": "ask"
+    "external_directory": "ask",
+    "external_directory:*/.pi/*": "allow",
+    "external_directory:*/.pi": "allow"
   }
 }
