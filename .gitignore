@@ -34,6 +34,9 @@
 !pi-permissions.jsonc
 !pi-permissions.jsonc/
 !pi-permissions.jsonc/**
+!PI-PERMISSIONS.md
+!PI-PERMISSIONS.md/
+!PI-PERMISSIONS.md/**
 !keybindings.json
 !keybindings.json/
 !keybindings.json/**
