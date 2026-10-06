@@ -1,6 +1,7 @@
 {
   // Extra paths to sync, on top of the built-in allowlist.
   // pi-permissions.jsonc holds the global pi-permission-system policy.
+  // PI-PERMISSIONS.md documents why that policy is shaped the way it is.
   // keybindings.json holds the user keybinding overrides.
-  "extraPaths": ["pi-permissions.jsonc", "keybindings.json"]
+  "extraPaths": ["pi-permissions.jsonc", "PI-PERMISSIONS.md", "keybindings.json"]
 }

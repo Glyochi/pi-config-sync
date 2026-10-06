@@ -1,111 +1,127 @@
 {
   // Global pi-permission-system policy.
+  // Rationale and design notes: see PI-PERMISSIONS.md (synced by pi-config-sync).
+  // Model: allow by default. Ask only for file deletes, sudo, and credential
+  // access. Deny recursive force deletes.
   //
-  // Resolution layers, lowest to highest precedence:
-  //   global policy < project policy < global agent frontmatter < project agent frontmatter
-  // Wildcard sections use last-matching-rule-wins, so broad rules are listed first.
-  //
-  // Reads are allowed and mutations ask. The only path exception is any .pi
-  // directory (Pi's own config): reads there are always allowed, even outside
-  // the working directory, because Pi self-modifies its config in that tree.
-  // A few destructive commands are hard-denied and cannot be relaxed by YOLO.
+  // Bash rules match the WHOLE command string with last-matching-rule-wins, so
+  // deny rules are declared last to beat the delete ask rules.
 
   "defaultPolicy": {
-    "tools": "ask",
-    "bash": "ask",
-    "mcp": "ask",
-    "skills": "ask",
+    "tools": "allow",
+    "bash": "allow",
+    "mcp": "allow",
+    "skills": "allow",
     "special": "ask"
   },
 
   "tools": {
-    "*": "ask",
+    "*": "allow",
 
-    // Read-only built-ins.
-    "read": "allow",
-    "grep": "allow",
-    "find": "allow",
-    "ls": "allow",
-
-    // File mutators: one entry per registered tool name. All stay "ask" so
-    // Markdown, permission, and config changes always need user approval.
-    "write": "ask",
-    "edit": "ask",
-    "replace": "ask",
-    "insert": "ask",
-    "undo_last_change": "ask",
-
-    // pi-plan-build lifecycle tools plus its optional question tool.
-    "plan_*": "allow",
-    "question": "allow",
-
-    // Non-filesystem tools.
-    "task": "allow",
-    "webfetch": "allow",
-    "websearch": "allow"
+    // Credentials: every content action asks (path-bearing built-ins).
+    "read:*/auth.json": "ask",
+    "write:*/auth.json": "ask",
+    "edit:*/auth.json": "ask",
+    "grep:*/auth.json": "ask",
+    "read:*/.pi/agent/auth/*": "ask",
+    "write:*/.pi/agent/auth/*": "ask",
+    "edit:*/.pi/agent/auth/*": "ask",
+    "grep:*/.pi/agent/auth/*": "ask",
+    "read:*/.git-credentials*": "ask",
+    "write:*/.git-credentials*": "ask",
+    "edit:*/.git-credentials*": "ask",
+    "grep:*/.git-credentials*": "ask",
+    "read:*/.netrc*": "ask",
+    "write:*/.netrc*": "ask",
+    "edit:*/.netrc*": "ask",
+    "grep:*/.netrc*": "ask",
+    "read:*/.npmrc*": "ask",
+    "write:*/.npmrc*": "ask",
+    "edit:*/.npmrc*": "ask",
+    "grep:*/.npmrc*": "ask",
+    "read:*/.ssh/*": "ask",
+    "write:*/.ssh/*": "ask",
+    "edit:*/.ssh/*": "ask",
+    "grep:*/.ssh/*": "ask",
+    "read:*/.aws/*": "ask",
+    "write:*/.aws/*": "ask",
+    "edit:*/.aws/*": "ask",
+    "grep:*/.aws/*": "ask",
+    "read:*/.config/gh/*": "ask",
+    "write:*/.config/gh/*": "ask",
+    "edit:*/.config/gh/*": "ask",
+    "grep:*/.config/gh/*": "ask",
+    "read:*/.docker/config.json*": "ask",
+    "write:*/.docker/config.json*": "ask",
+    "edit:*/.docker/config.json*": "ask",
+    "grep:*/.docker/config.json*": "ask",
+    "read:*/.env*": "ask",
+    "write:*/.env*": "ask",
+    "edit:*/.env*": "ask",
+    "grep:*/.env*": "ask",
+    "read:*token*": "ask",
+    "write:*token*": "ask",
+    "edit:*token*": "ask",
+    "grep:*token*": "ask",
+    "read:*secret*": "ask",
+    "write:*secret*": "ask",
+    "edit:*secret*": "ask",
+    "grep:*secret*": "ask",
+    "read:*credential*": "ask",
+    "write:*credential*": "ask",
+    "edit:*credential*": "ask",
+    "grep:*credential*": "ask"
   },
 
   "bash": {
-    "*": "ask",
+    "*": "allow",
 
-    // Exact-match read-only commands. Wildcards such as "git log*" would also
-    // match chained commands ("git log; rm -rf /"), so these stay exact.
-    "git status": "allow",
-    "git status -s": "allow",
-    "git status --short": "allow",
-    "git diff": "allow",
-    "git diff --stat": "allow",
-    "git log": "allow",
-    "git branch": "allow",
-    "ls": "allow",
-    "pwd": "allow",
+    // ---- File deletes ask ----
+    "*rm *": "ask",
+    "*rmdir *": "ask",
+    "*unlink *": "ask",
+    "*shred *": "ask",
+    "*truncate *": "ask",
+    "*find *-delete*": "ask",
+    "*git clean*": "ask",
+    "*git rm *": "ask",
+    "*git reset --hard*": "ask",
+    "*git restore*": "ask",
 
-    // Reads under any .pi directory are always allowed. The pattern matches
-    // ~/.pi/..., /abs/.pi/..., and relative .pi/... paths.
-    "cat *.pi/*": "allow",
-    "head *.pi/*": "allow",
-    "tail *.pi/*": "allow",
-    "grep *.pi/*": "allow",
-    "rg *.pi/*": "allow",
-    "ls *.pi/*": "allow",
-    "wc *.pi/*": "allow",
-    "stat *.pi/*": "allow",
-    "file *.pi/*": "allow",
-    "cat *.pi": "allow",
-    "ls *.pi": "allow",
+    // ---- sudo asks ----
+    "*sudo *": "ask",
 
-    // Chaining, redirection, and substitution stay at "ask", so a .pi read
-    // allow cannot be chained into a mutation. These were already "ask"
-    // before, so this is not a new restriction.
-    "*;*": "ask",
-    "*&&*": "ask",
-    "*&*": "ask",
-    "*||*": "ask",
-    "*|*": "ask",
-    "*`*": "ask",
-    "*$(*": "ask",
-    "*>*": "ask",
-    "*<*": "ask",
-    "*\n*": "ask",
+    // ---- Credentials ask (read or write) ----
+    "*auth.json*": "ask",
+    "*.pi/agent/auth*": "ask",
+    "*.git-credentials*": "ask",
+    "*.netrc*": "ask",
+    "*.npmrc*": "ask",
+    "*.ssh/*": "ask",
+    "*.aws/*": "ask",
+    "*.config/gh/*": "ask",
+    "*.docker/config.json*": "ask",
+    "*.env*": "ask",
+    "*token*": "ask",
+    "*secret*": "ask",
+    "*credential*": "ask",
 
-    // Deny floors. YOLO does not relax these.
-    "rm -rf *": "deny",
-    "rm -fr *": "deny",
-    "rm -r *": "deny",
-    "git push*": "deny",
-    "git reset --hard*": "deny",
-    "git clean -*": "deny",
-    "sudo *": "deny"
+    // ---- Hard deny: recursive force delete (declared last so it wins) ----
+    "*rm -rf *": "deny",
+    "*rm -fr *": "deny",
+    "*rm -r *": "deny"
+  },
+
+  "mcp": {
+    "*": "allow"
   },
 
   "skills": {
-    "*": "ask"
+    "*": "allow"
   },
 
   "special": {
     "doom_loop": "ask",
-    "external_directory": "ask",
-    "external_directory:*/.pi/*": "allow",
-    "external_directory:*/.pi": "allow"
+    "external_directory": "allow"
   }
 }
