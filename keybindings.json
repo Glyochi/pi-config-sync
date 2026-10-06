@@ -1,4 +1,5 @@
 {
   "tui.altScreen.halfPageUp": "ctrl+u",
-  "tui.altScreen.halfPageDown": "ctrl+d"
+  "tui.altScreen.halfPageDown": "ctrl+d",
+  "app.interrupt": "alt+x"
 }
