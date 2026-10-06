@@ -1,6 +1,6 @@
 {
   "defaultProvider": "opencode",
-  "defaultModel": "kimi-k2.6",
+  "defaultModel": "deepseek-v4.1-flash",
   "packages": [
     "npm:pi-config-sync@0.3.0",
     "npm:pi-toggle-skills@0.1.20",
