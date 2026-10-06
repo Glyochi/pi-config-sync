@@ -8,7 +8,8 @@
     "npm:pi-web-access@0.35.0",
     "npm:pi-undo-redo@0.1.3",
     "npm:pi-permission-system@0.8.0",
-    "npm:@janvitos/pi-plan-build@0.1.117"
+    "npm:@janvitos/pi-plan-build@0.1.117",
+    "npm:@juicesharp/rpiv-ask-user-question"
   ],
   "theme": "neon-green",
   "tuiMode": "fullscreen",
