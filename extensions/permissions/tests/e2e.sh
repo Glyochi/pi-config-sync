@@ -36,6 +36,14 @@ fi
 printf '%s\n' '{"jev":{"enabled":true},"yolo":false}' >"$TMP_DIR/jev-on.jsonc"
 printf '%s\n' '{"jev":{"enabled":false},"yolo":true}' >"$TMP_DIR/yolo-on.jsonc"
 
+# A session that already carries the pi-plan-build state entry, because the `--plan`
+# flag does not persist one in print mode. This is the only reliable way to drive
+# Plan mode headlessly, and it exercises the real mode-detection path.
+cat >"$TMP_DIR/plan-session.jsonl" <<'JSON'
+{"type":"session","version":3,"id":"01a1146a-0000-7000-8000-0000000000aa","timestamp":"2026-10-07T14:00:00.000Z","cwd":"/workspace"}
+{"type":"custom","id":"p1","parentId":null,"timestamp":"2026-10-07T14:00:01.000Z","customType":"pi-plan-build-state","data":{"version":4,"selectedMode":"plan","collection":{"records":[],"attached":null},"execution":null}}
+JSON
+
 # Print the text of every tool result in a `pi --mode json` transcript.
 extract_results() {
 	python3 -c '
@@ -71,10 +79,11 @@ has_cost() {
 
 run_pi() {
 	local out="$1" command="$2" extra="${3:-}" config="${4:-}"
-	local env_prefix=()
+	local env_prefix=() session_flags=(--no-session)
 	[[ -n "$config" ]] && env_prefix=(env "PI_PERMISSIONS_CONFIG_PATH=$config")
+	[[ "$extra" == *"--session"* ]] && session_flags=()
 	# shellcheck disable=SC2086  # extra holds whole flag words on purpose
-	timeout "${PROBE_TIMEOUT:-300}" "${env_prefix[@]}" pi -p --mode json --no-session "${PI_ARGS[@]}" $extra \
+	timeout "${PROBE_TIMEOUT:-300}" "${env_prefix[@]}" pi -p --mode json "${session_flags[@]}" "${PI_ARGS[@]}" $extra \
 		"Use the bash tool to run exactly this command and nothing else, then reply done. Do not skip the tool call: $command" \
 		>"$out" 2>&1
 }
@@ -140,12 +149,14 @@ probe compound-jevv-off "echo a && echo b" present "b" no
 probe compound-jevv-on "echo a && echo b" present "b" yes "" "$TMP_DIR/jev-on.jsonc"
 
 # Hard block: a bare-word credential pattern on a command a model will run.
-probe hard-block 'echo "$GITHUB_TOKEN"' present "permissions credential gate" no
-probe yolo-disables-blocks 'echo "$GITHUB_TOKEN"' absent "permissions credential gate" no "" "$TMP_DIR/yolo-on.jsonc"
+# `echo token` is deliberately innocuous, because anything that looks like a real
+# credential makes the driving model refuse and the probe measures the model.
+probe hard-block "echo token" present "permissions credential gate" no
+probe yolo-disables-blocks "echo token" absent "permissions credential gate" no "" "$TMP_DIR/yolo-on.jsonc"
 
-# Mode dimension: a shell mutation is refused in Plan mode, a read is not.
-probe plan-blocks-mutation "echo a && echo b" present "Plan mode is read-only" no "--plan"
-probe plan-allows-read "ls -la /workspace" present "AGENTS.md" no "--plan"
+# Mode dimension, driven from a session that already carries the plan state entry.
+probe plan-blocks-mutation "echo a && echo b" present "Plan mode is read-only" no "--session $TMP_DIR/plan-session.jsonl"
+probe plan-allows-read "ls -la /workspace" present "AGENTS.md" no "--session $TMP_DIR/plan-session.jsonl"
 
 echo
 echo "asserted: $PASSED passed, $FAILED failed, $INCONCLUSIVE inconclusive"
