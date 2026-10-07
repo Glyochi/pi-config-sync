@@ -46,6 +46,8 @@ export interface PermissionsConfig {
 	workingDirectories: string[];
 	/** Declarative bash globs, matched whole-string with last-match-wins. */
 	bash: Record<string, RuleState>;
+	/** Repeated identical calls, which is what `special.doom_loop` covered before. */
+	doomLoop: { threshold: number; state: RuleState };
 	audit: { enabled: boolean };
 	maxCommandChars: number;
 	maxIntentChars: number;
@@ -247,6 +249,7 @@ export const DEFAULT_CONFIG: PermissionsConfig = {
 		forms: DEFAULT_CATASTROPHE_FORMS,
 	},
 	bash: DEFAULT_BASH_RULES,
+	doomLoop: { threshold: 3, state: "ask" },
 	audit: { enabled: true },
 	rules: {
 		environment: DEFAULT_ENVIRONMENT,
@@ -372,6 +375,7 @@ export function normalizeConfig(raw: unknown): PermissionsConfig {
 	const hardBlock = isRecord(raw.hardBlock) ? raw.hardBlock : {};
 	const fileTools = isRecord(raw.fileTools) ? raw.fileTools : {};
 	const audit = isRecord(raw.audit) ? raw.audit : {};
+	const doomLoop = isRecord(raw.doomLoop) ? raw.doomLoop : {};
 	const catastrophe = isRecord(raw.catastrophe) ? raw.catastrophe : {};
 	const rules = isRecord(raw.rules) ? raw.rules : {};
 	const criteria = isRecord(rules.criteria) ? rules.criteria : {};
@@ -402,6 +406,10 @@ export function normalizeConfig(raw: unknown): PermissionsConfig {
 		},
 		fileTools: { credential: asRuleState(fileTools.credential, DEFAULT_CONFIG.fileTools.credential) },
 		bash: asRuleMap(raw.bash, DEFAULT_BASH_RULES),
+		doomLoop: {
+			threshold: asNumber(doomLoop.threshold, DEFAULT_CONFIG.doomLoop.threshold, 2),
+			state: asRuleState(doomLoop.state, DEFAULT_CONFIG.doomLoop.state),
+		},
 		audit: { enabled: asBoolean(audit.enabled, DEFAULT_CONFIG.audit.enabled) },
 		catastrophe: {
 			paths: asStringArray(catastrophe.paths, DEFAULT_CATASTROPHE_PATHS),

@@ -149,6 +149,10 @@
     "* sudo *": "ask"
   },
 
+  // Repeated identical calls, which is what `special.doom_loop` covered before. The
+  // third call with the same tool and arguments in one session asks before running.
+  "doomLoop": { "threshold": 3, "state": "ask" },
+
   // ---- Audit ---------------------------------------------------------------
   // One JSONL line per decision under extensions/permissions/logs/. That directory is
   // on pi-config-sync's denylist, so it never leaves the machine.

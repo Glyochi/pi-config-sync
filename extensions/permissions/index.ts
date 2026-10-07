@@ -80,6 +80,8 @@ interface State {
 	breaker: CircuitBreaker;
 	intent: IntentSnapshot;
 	pendingUsage: Map<string, UsageTotals>;
+	/** Identical-call counters, which is what `special.doom_loop` covered before. */
+	dooms: Map<string, number>;
 	lastDecision: string;
 	yoloNotified: boolean;
 	configNotified: boolean;
@@ -220,6 +222,7 @@ function resetState(ctx: ExtensionContext, pi: ExtensionAPI): State {
 		breaker: new CircuitBreaker(loaded.config.failureThreshold),
 		intent: readIntent(ctx, loaded.config.maxIntentChars),
 		pendingUsage: new Map<string, UsageTotals>(),
+		dooms: new Map<string, number>(),
 		lastDecision: "none",
 		yoloNotified: false,
 		configNotified: false,
@@ -445,6 +448,16 @@ async function gate(
 	current.lastDecision = decision.kind;
 
 	if (decision.kind === "allow") {
+		// The same call with the same arguments, over and over, is what the old
+		// `special.doom_loop` check caught; ask before it runs a fourth time.
+		const signature = `${event.toolName}\u0000${JSON.stringify(event.input ?? {})}`;
+		const count = (current.dooms.get(signature) ?? 0) + 1;
+		setBounded(current.dooms, signature, count, 200);
+		if (current.config.doomLoop.state !== "allow" && count >= current.config.doomLoop.threshold) {
+			const reason = `permissions: '${event.toolName}' has been called with identical arguments ${count} times, which looks like a loop.`;
+			audit({ tool: event.toolName, mode: current.mode, switches: current.switches, decision: "ask", source: "doom-loop", reason });
+			return await resolveAsk("permissions: repeated identical call", reason, event.toolCallId, ctx, current);
+		}
 		audit({ tool: event.toolName, mode: current.mode, switches: current.switches, decision: "allow", source: "deterministic" });
 		return undefined;
 	}

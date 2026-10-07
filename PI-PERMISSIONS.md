@@ -1,281 +1,189 @@
 # Pi permission policy rationale
 
-Why the synced policy files are shaped the way they are. They travel with
-pi-config-sync, so the reasoning reaches every machine.
+Why the one policy layer is shaped the way it is. It is synced by pi-config-sync, so
+the reasoning reaches every machine.
 
-- [`pi-permissions.jsonc`](./pi-permissions.jsonc) — the `pi-permission-system`
-  policy: the declarative bash globs, plus file tools, MCP, skills, and special
-  checks.
-- [`bash-safety.jsonc`](./bash-safety.jsonc) — the `bash-safety` extension: the
-  Jev rules, the credential matcher, and the working-directory guidance.
-- `extensions/bash-safety/` — the extension itself, with its tests and its own
-  [README](./extensions/bash-safety/README.md).
+- [`permissions.jsonc`](./permissions.jsonc) — the whole policy: switches, mode
+  behaviour, hard blocks, the declarative bash rules, and the rules Jev reads.
+- `extensions/permissions/` — the extension itself, with its own
+  [README](./extensions/permissions/README.md) and tests.
+- Command: `/permissions`.
+
+This replaced two things: `pi-permission-system` (removed from `settings.json`) and
+the `bash-safety` extension (absorbed and deleted), along with the retired
+`pi-permissions.jsonc` and `bash-safety.jsonc`.
 
 ## The model
 
-**Two bash layers, split by what a glob can read, plus the ordering fact that
-makes the split work.**
+One `tool_call` handler, applied in this order:
 
-Local `agentDir/extensions/` is discovered before configured package paths, so
-`bash-safety` always runs *before* `pi-permission-system`, and `emitToolCall()`
-returns on the first handler that blocks. Therefore:
+1. **YOLO on** → allow. No gating at all.
+2. **Hard blocks** — credential patterns, and the catastrophe gate for shell commands.
+3. **Mode** — shell mutations and effectful MCP are refused in Plan mode.
+4. **Declarative bash globs** — whole-string, last-match-wins.
+5. **Jev**, when the Jev switch is on, for effectful tools a rule cannot read.
+6. **Approvals** — one-shot `Allow once` / `Reject`.
 
-- A rule in `bash-safety` runs first and can decide **without** paying for a
-  classifier call.
-- A glob in `pi-permissions.jsonc` runs second, so it cannot skip the classifier —
-  it can only add a decision after Jev has made one.
-- The credential check has to live in `bash-safety`, because it must precede
-  classification.
+Every registered tool is covered. Reads (`read`, `grep`, `find`, `ls`) are decided
+deterministically only. Effectful tools (`bash`, `powershell`, `write`, `edit`, the
+`mcp` proxy and directly registered `mcp__*` tools) can reach Jev. Anything else —
+the plan tools, `question` — is neutral and passes.
 
-The split itself:
+## The two switches
 
-| Command | Decided by | Cost |
+Independent, so there are four combinations:
+
+| JEV | YOLO | Behaviour |
 |---|---|---|
-| Single command, no shell syntax | `pi-permissions.jsonc` globs | instant, free |
-| Compound command (`;`, `&&`, `\|\|`, `\|`, `&`, `>`, `<`, backtick, `$(`, newline) | Jev | one round trip |
-| Interpreter payload (`bash -c`, `sh -c`, `python -c`, `node -e`, `eval`, `xargs … sh -c`, …) | Jev | one round trip |
-| Compound, but every segment read-only and nothing redirected | neither — passes through | instant, free |
-| Anything touching a credential path | `bash-safety` hard block | instant, free |
-| Anything *modifying* a catastrophic directory | `bash-safety` catastrophe gate | instant, free |
+| on | off | deterministic rules, then Jev; `ask` prompts; hard blocks absolute |
+| on | on | deterministic rules, then Jev; `ask` auto-approved; **hard blocks disabled** |
+| off | off | deterministic rules only, no classifier call; `ask` prompts; hard blocks absolute |
+| off | on | deterministic rules only; `ask` auto-approved; **hard blocks disabled** |
 
-Everything else — file tools, MCP, skills, `special` — stays with
-`pi-permission-system`: allow by default, ask when a path-bearing file tool
-(`read`, `write`, `edit`, `grep`) touches credentials, `special.external_directory`
-`allow`, `doom_loop` `ask`.
+Both default from the policy file — Jev off, YOLO off — and `/permissions jev on|off`
+and `/permissions yolo on|off` flip them for the session.
 
-## The declarative bash policy
+**YOLO disables the credential and catastrophe hard blocks.** That is deliberate and it
+is the sharpest edge in the system: with YOLO on there is no floor at all, so a
+credential read or a write into `/usr` runs untouched, in any mode. The audit log is
+then the only record. Jev off is the opposite kind of switch: it changes nothing about
+what is allowed, it only removes the classifier calls.
 
-Rules are globs matched against the **whole command string**, with
-**last-matching-rule-wins**, so the order is broad allow → asks → denies.
+## Modes
 
-- **Ask** on external-effect verbs: `git push`, `gh`, `aws`, `gcloud`, `az`,
-  `kubectl`, `terraform`, `docker push`, `npm publish`, `ssh`, `scp`, `rsync`,
-  authenticated or uploading `curl`/`wget`, and `sudo`.
-- **Deny** credential paths (see below).
-- **Deny** catastrophic deletes last: `rm -rf`/`rm -fr` of `/usr`, `/bin`,
-  `/sbin`, `/lib`, `/etc`, `/var`, `/boot`, `/opt`, `/root`, `/sys`, `/proc`,
-  `~`, `$HOME`, and `/` as the final token.
+Every decision carries the current mode. The mode comes from `pi-plan-build`, which
+publishes no runtime API and emits no events, so it is read in this order:
 
-There is deliberately **no bare `*rm -rf /*` rule**: it would also deny
-`rm -rf /workspace/build` and `rm -rf /tmp/x`, which the working-directory policy
-allows. Only the named system paths, home, and root-as-final-token are denied.
+1. `pi.getFlag("plan")` / `pi.getFlag("build")` — the only signal available before the
+   first state entry exists.
+2. The newest `pi-plan-build-state` custom session entry from the session branch,
+   reading `data.selectedMode`.
+3. `"build"`.
 
-A single external-effect command asks **every time**, regardless of session
-intent. That is the accepted price of deciding it without a model: a `git push`
-in a session whose whole purpose is to push still asks.
+Resolved per turn in `before_agent_start`, and refreshed on a tool call when the
+session leaf moved, so a mid-turn switch is seen. The active tool set is **not** a
+signal: `stableToolCatalog` defaults to `true`, so both modes receive the same managed
+plan tools.
 
-## Catastrophe gate
+**What Plan mode does here.** Shell mutations are refused — anything that is not a
+read-only chain, so `rm`, `mv`, `sed -i`, `git reset --hard`, and a redirect are all
+blocked while `ls`, `cat`, `git status && git diff` still work. Effectful MCP is
+refused too, and effectful MCP tools are removed from the prompt for the turn.
 
-`rm -rf` is only one way to wreck `/usr`. Any command that **modifies** a
-catastrophic directory is denied outright and never prompts — not even for a
-deliberate write into a system path.
+**What Plan mode deliberately does not own.** `write` and `edit` stay with
+`pi-plan-build`, which already blocks them in Plan mode and already exempts the plan
+Markdown that Plan mode has to be able to revise. Duplicating that here would have
+either blocked plan revision or required copying pi-plan-build's plan-path logic.
 
-`catastrophe.paths` and `catastrophe.commands` in `bash-safety.jsonc` are listed
-separately and combined at match time, so adding one entry covers it against every
-entry of the other list and there is no generated rule file to keep in sync.
+Observed detail: `pi -p --plan` does **not** persist a state entry in print mode, so
+headless Plan testing drives the mode from a session that already carries the entry.
+The TUI path is the real one and is covered by the human checks.
 
-- **paths**: `/`, `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc`, `/var`,
-  `/boot`, `/opt`, `/root`, `/sys`, `/proc`, `/dev`, `~`, `$HOME`.
-- **commands**: `rm`, `rmdir`, `unlink`, `shred`, `truncate`, `mv`, `cp`, `chmod`,
-  `chown`, `chgrp`, `chattr`, `ln`, `install`, `tee`, `dd`, `mkfs`, `wipefs`,
-  `mount`, `umount`, `blkdiscard`.
-- **forms**: `sed -i`, `-delete`, `-exec`, `--delete`, `of=` — multi-token forms
-  the command word alone cannot see, as in `find /usr -name '*.o' -delete`.
+## The deterministic core
 
-Three precision rules keep the deny off prose and reads:
+**Hard blocks.** Credential patterns are matched case-insensitively as substrings: a
+shell command against its whole string, and a path-bearing file tool against its target
+path. A shell match blocks outright; a file-tool match follows `fileTools.credential`,
+which is `ask` — that preserves the behaviour `pi-permission-system` had for those
+tools. Directory patterns carry no trailing slash (`.ssh`, `.aws`, `.config/gh`) so
+`find ~/.ssh -name 'id_*'` matches too, and the env templates are exempt.
 
-- The command word is matched **at command position**, after skipping `sudo`,
-  `env`, `nohup`, `nice`, `ionice`, `time`, `timeout`, `xargs`, `command`, `exec`,
-  `setsid`, and `stdbuf` plus their flags, so
-  `git commit -m "fix rm handling in /etc"` is not blocked.
-- Paths are matched as **path tokens**, so `/usr` matches `/usr/share/x` but not
-  `/usrx`.
-- Redirection **targets are parsed**, so `cat /etc/hosts > /tmp/x` stays allowed
-  while `echo x > /etc/hosts` does not, and `2>/dev/null` is ignored.
+**Catastrophe gate.** Any *modification* of a catastrophic directory is refused, not
+just `rm -rf`. `catastrophe.paths` and `catastrophe.commands` are listed separately and
+combined at match time, so one new entry covers it against every entry of the other
+list. Matching is command-position aware, after skipping `sudo`, `env`, `nohup`,
+`nice`, `ionice`, `time`, `timeout`, `xargs`, `command`, `exec`, `setsid`, and `stdbuf`
+plus their flags, so `git commit -m "fix rm handling in /etc"` is not blocked.
+Redirection targets are parsed, so `cat /etc/hosts > /tmp/x` passes while
+`echo x > /etc/hosts` does not, and `2>/dev/null` is ignored. Deny never prompts.
 
-Measured: `chmod -R 000 /usr/share/…` is blocked with `'chmod' targets '/usr'`,
-while the same command under `/tmp` runs.
+**Declarative bash rules.** Whole-string globs, last-match-wins, ordered allow → ask →
+deny. They decide single commands for free: an external-effect verb (`git push`, `gh`,
+`aws`, `gcloud`, `az`, `kubectl`, `terraform`, `docker push`, `npm publish`, `ssh`,
+`scp`, `rsync`, an uploading `curl`/`wget`, `sudo`) asks; everything else is allowed.
+A single external-effect command asks **every time**, regardless of session intent —
+that is the accepted price of deciding it without a model.
 
-The `rm -rf` globs in `pi-permissions.jsonc` remain as the declarative backstop for
-when the gate is off, so switching it off narrows catastrophe protection to
-recursive-force deletes.
+**Doom loop.** Repeated identical calls, which is what `special.doom_loop` covered
+before, are counted per session by tool name and arguments; the third one asks.
 
-## Credentials
+## Jev
 
-Two mechanisms, by necessity:
+**Scope.** Effectful tools only, and for shell tools only when the command is compound
+or an interpreter payload. A single command and a read-only chain were already decided
+by the globs, so they cost no classifier call.
 
-1. **`bash-safety`'s matcher** — case-insensitive substring matching over the
-   whole command, run before any classifier call, covering simple *and* compound
-   commands. It returns `{ block: true }` and short-circuits. It never prompts,
-   and YOLO never bypasses it. The pattern list carries no trailing slash on
-   directories (`.ssh`, `.aws`, `.config/gh`) so `find ~/.ssh -name 'id_*'` matches
-   too, and exemptions re-allow `.env.example`, `.env.sample`, and `.env.template`.
-2. **`pi-permissions.jsonc` deny globs** — the declarative backstop. These are what
-   keep credentials blocked when the gate is switched off with `/bash-safety off`.
-   Globs cannot express a negative match, so the env-template exemptions are
-   re-allowed *after* the denies.
+**Payload.** Tool name, mode, the command or target path, a capped preview of the
+content or arguments, the session intent (session name, original task or latest
+compaction summary, latest user message), and the environment blurb.
 
-`tests/lib.test.ts` asserts that the two lists cover exactly the same set, so the
-duplication cannot drift.
+**Failure handling.** `classify()` never rejects, so the gate checks `stopReason` and
+`errorMessage` itself. A failure allows the action, notifies when a UI exists, and
+counts toward a per-session breaker: after three consecutive failures the gate stops
+classifying for the rest of the session and says so once. Fail-open is deliberate — the
+deterministic layers are unaffected, so an outage degrades the gate rather than
+stopping work.
 
-This is the one risk the container does **not** mitigate. The agent process has to
-read `~/.pi/agent/auth/auth.json` to talk to the model, the container has outbound
-network access, and "re-authenticate" is not the same as "rotate a leaked key" — a
-leaked key stays valid until revoked.
+**Cost.** Usage rides on the tool result through a `tool_result` handler, so it lands in
+the session totals under `Tools/summaries`. A blocked call never produces a tool result,
+so its cost stays uncounted. At `jev-1.13` pricing a call is about $0.00004.
 
-## Why the split, and why not pure globs
+## Approvals
 
-### The container removes the blast radius that globs were protecting
+One-shot: `Allow once` or `Reject`. Nothing is stored, so there is no "Allow Always" —
+YOLO is the answer for repeated approval. With no UI and no forwarding, an `ask`
+blocks.
 
-Pi runs inside the `linux-quick-setup` Docker container (see
-`docker-compose.yaml`):
+## Subagent forwarding
 
-- Runs as uid 1000 `dev`, `CapEff=0`, no docker socket -> no privilege escalation
-  and no container escape.
-- `/` is an ephemeral overlay: package installs, `/etc` edits, and dotfiles vanish
-  when the container is recreated and never touch the host.
-- The only persistent mounts are `/workspace` (the host project directory,
-  normally git-tracked) and the `pi-auth`, `pi-sessions`, `pi-state` volumes.
+A subagent has no UI, so an `ask` travels to the interactive parent. The protocol is
+files under `<agentDir>/permission-forwarding/sessions/<sessionId>/{requests,responses}`:
+the requester writes a request and waits, the parent scans every 2 seconds, prompts, and
+answers, with a 10-minute timeout. Subagent detection uses `PI_IS_SUBAGENT`,
+`PI_SUBAGENT_SESSION_ID`, and `PI_AGENT_ROUTER_SUBAGENT`; the parent session id comes
+from `PI_AGENT_ROUTER_PARENT_SESSION_ID`; the root can be redirected with
+`PI_PERMISSION_SYSTEM_FORWARDING_AGENT_DIR`.
 
-So the classic reason for a guarded shell does not apply, and the delete question
-shrinks to *where*: files inside the working directories are cheap to lose, while a
-recursive delete aimed at `/`, `/usr`, or `~` can break the container or the
-mounted project. Those specific paths are denied by glob; the rest is left alone.
+## Audit log
 
-### The remaining risk is semantic, not lexical
+One JSONL line per decision at `extensions/permissions/logs/permissions.jsonl`, with the
+tool, mode, both switches, the decision, its source (`deterministic`, `classifier`,
+`cache`, `doom-loop`, `breaker-open`, `classifier-failure`, `forwarding`), and the
+reason or confidence. That directory is on pi-config-sync's denylist, so it never leaves
+the machine. Disable with `audit.enabled: false`.
 
-What is actually expensive is an effect *outside* the container — a push, a cloud
-or CI/CD mutation, an authenticated upload — and what makes a command dangerous can
-be *how* it is written: `find ~/.pi/agent -name 'au*json' -exec cp -p {} /tmp/x \;`
-never contains the literal `auth.json`, and `bash -c '…'` hides its payload behind a
-single innocuous token. Globs read the first token; they cannot read a chain.
+## What was dropped
 
-So Jev gets the command, `cwd`, the repo's remote and branch, the session intent
-(session name, original task, latest user message), and an environment blurb, and
-returns `allow` / `ask` / `deny` — but only for the commands a glob cannot read.
-
-### Why not classify everything
-
-Because it costs a round trip on every command. Measured against the real prompt:
-**319 / 575 / 368 ms, 1026 input tokens, $0.000043 per call**, on the critical path,
-since `tool_call` handlers are awaited before the tool executes. A session with 40
-bash calls paid 15–25 s for judgements that were usually obvious. Single commands
-and read-only chains now pay nothing.
-
-## What each Jev verdict does
-
-| Verdict | UI, YOLO off | UI, YOLO on | No UI (`print`/`json`, subagents) |
-|---|---|---|---|
-| `allow` | runs | runs | runs |
-| `ask` | prompts — "Jev is unsure" | runs, with a session-once notice | blocked |
-| `deny` | prompts — "Jev disapproves, be careful" | prompts | blocked |
-| hard block | blocked | blocked | blocked |
-| classifier failure | runs, with a warning | runs, with a warning | runs |
-
-`deny` is an emphasis, not a hard stop, whenever a UI exists. Only the credential
-hard block is absolute. `/bash-safety check` and the `ask`/`deny` dialogs print the
-full `allow` / `ask` / `deny` probability distribution.
-
-The glob layer behaves like `pi-permission-system` always has: `ask` prompts with
-Allow Once / Allow Always / Reject, and **blocks** when no UI can resolve it
-(`canResolveAskPermissionRequest` is true only with a UI, in a subagent, or under
-YOLO). A configured `deny` is a hard boundary and is never relaxed by YOLO or by a
-previous approval.
-
-## YOLO
-
-One shared switch. `bash-safety` reads and writes
-`globalThis.__piPermissionSystem`, the runtime API `pi-permission-system` publishes,
-so `/permission-system` and `/bash-safety yolo` flip the same state, persisted in
-`extensions/pi-permission-system/config.json`.
-
-Under YOLO, `ask` auto-runs in every mode — Jev's verdicts *and* the glob asks.
-That is deliberate for delegated or unattended work, but it means **YOLO also
-silently approves `git push`, `aws`, `sudo`, and uploads**. `deny` and the hard
-block are unaffected.
-
-> Check this before relying on the glob asks: that config's `yoloMode` has been
-> observed set to `true`, which makes every external-effect ask auto-approve.
-> `/bash-safety yolo off` turns it off.
-
-## Failure handling
-
-`classify()` never rejects, so the gate checks `stopReason` and `errorMessage`
-itself. A failure (error, timeout, missing credentials, rate limit) allows the
-command, notifies when a UI exists, and counts toward a per-session breaker: after
-three consecutive failures the gate stops classifying for the rest of the session
-and says so once. A success resets the counter.
-
-Fail-open is deliberate. The glob layer and the credential hard block are
-deterministic and unaffected by the breaker, so a classifier outage degrades the
-gate rather than stopping work.
-
-## Cost
-
-`classify()` reports usage, and a `tool_result` handler attaches it to the bash
-tool result, so an executed command's classifier cost lands in the session totals
-under `Tools/summaries` in the footer and `/session` — about $0.000043 per
-classified command at `jev-1.13` pricing, and now only for compound or interpreter
-commands.
-
-Blocked calls never produce a tool result, so their classifier cost stays
-uncounted: a hard block, a no-UI `ask`/`deny`, an `ask`/`deny` you reject, and
-`/bash-safety check` all spend a call the totals do not show. The pending-usage map
-is bounded at 64 entries and cleared each session.
-
-## Toggling
-
-- `/bash-safety off` — session-scoped. Skips the credential block, the
-  catastrophe gate, and Jev, leaving the declarative globs as the only bash gate.
-  `/bash-safety on` restores it. No file edit and no reload.
-- `"enabled": false` in `bash-safety.jsonc`, then `/bash-safety reload` — the same
-  thing at load time.
-- `pi config` — disables the extension itself, persistently. Equivalent manual
-  edit: `"extensions": ["-extensions/bash-safety"]` in `settings.json`.
-- `/bash-safety yolo on|off` — not an off switch; it only relaxes `ask`.
-
-## Delete guidance
-
-The `workingDirectories` list (default `/workspace`, `/tmp`, plus the session
-`cwd`) and the criteria that deletes inside them are `allow` while destructive
-deletes outside them are `deny` now apply only to **compound** deletes, since a
-single `rm` is decided by the globs. Measured behaviour is unchanged: a plain
-`rm -rf` inside a working directory is a near coin flip (allow 0.42 vs deny 0.38),
-so it prompts about half the time.
+Removed with `pi-permission-system`: skill gating and skill prompt sanitization, the
+config modal and Zellij modal, JSON-schema validation, the `globalThis.__piPermissionSystem`
+runtime API, and per-agent frontmatter policy. `skills` and
+`special.external_directory` were both `allow` before, so leaving them ungated preserves
+their behaviour rather than changing it. `special.doom_loop: ask` is reimplemented as
+`doomLoop`.
 
 ## Known limitations
 
-- The bash hard block is best-effort string matching. `$VAR` indirection, base64,
-  a globbed filename (`find ~/.pi/agent -name 'au*json'`), and file reads through a
-  helper script are not caught. That glob form passes the hard block and the
-  classifier returns `deny` (0.68 vs 0.26 ask).
-- Bare words over-match: a command containing `token`, `secret`, or `credential`
-  anywhere is blocked even when unrelated. The declarative globs repeat this.
-- Single external-effect commands ask regardless of intent; a compound command Jev
-  allows can still hit a glob ask afterwards, which can mean two dialogs.
-- The interpreter-payload list is a fixed pattern set. `bash script.sh`,
-  `python script.py`, and `make deploy` are single commands with no inline payload,
-  so they are decided by the globs alone.
+- Credential matching is substring based, so a bare word over-matches: a command
+  containing `token` anywhere is blocked even when unrelated.
 - The catastrophe gate resolves one command word per segment, so a wrapper given a
-  value-taking flag hides it: `sudo -u root chmod 000 /etc/passwd` is not blocked.
-  `tar -xf x.tar -C /usr` is also missed, since `tar` is not in `commands`.
-- `cp` and `ln` are in `commands` because overwriting a system path is the risk, so
-  copying a file *out* of one of those directories (`cp /etc/hosts /tmp/`) is denied
-  even though it only reads.
-- No egress control is configured. A prompt-injected session can still exfiltrate
-  whatever neither layer recognized.
-- The `powershell` tool is not gated by `bash-safety`.
-- The file-tool credential rules cover `read`/`write`/`edit`/`grep`; `find`/`ls`
-  metadata on credential paths is not gated.
+  value-taking flag hides it (`sudo -u root chmod 000 /etc/passwd` is not blocked), and
+  `tar -xf x.tar -C /usr` is missed because `tar` is not in `commands`. `cp` and `ln`
+  are blunt: copying a file *out* of a system directory is denied even though it only
+  reads.
+- Jev's verdicts are probabilistic, and its failure mode is fail-open.
+- Forwarding is implemented but has not been exercised against a live subagent.
+- With YOLO on there is no floor at all.
+- The interpreter-payload list is a fixed pattern set; `bash script.sh` is a single
+  command and is decided by the globs alone.
+- `PI_PERMISSIONS_CONFIG_PATH` points the policy at another file. It exists for the
+  tests; do not set it in normal use.
 
 ## How to change the policy
 
-1. Single-command behaviour: edit the `bash` globs in `pi-permissions.jsonc`, then
-   `/reload`. Validate with `tests/lib.test.ts`, which asserts the glob verdicts
-   for a table of commands.
-2. Compound-command behaviour and the rules Jev reads: edit
-   `~/.pi/agent/bash-safety.jsonc`, then `/bash-safety reload`. Dry-run a command
-   with `/bash-safety check <command>`.
-3. Credential patterns: change them in *both* files; the sync check in
-   `tests/lib.test.ts` fails if the two lists diverge.
+1. Edit `~/.pi/agent/permissions.jsonc`, then `/permissions reload`.
+2. Dry-run a decision with `/permissions check <tool> <command-or-path>`, and inspect
+   the switches with `/permissions status`.
+3. Credential patterns appear once, in `hardBlock.patterns`; the tests assert the
+   config still matches the built-in defaults for the credential, catastrophe, and bash
+   lists, so a typo fails a check rather than silently weakening the gate.
 4. pi-config-sync commits and pushes on the next sync; `/gitsync sync` does it now.
