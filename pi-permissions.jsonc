@@ -1,9 +1,10 @@
 {
   // Global pi-permission-system policy.
   // Rationale and design notes: see PI-PERMISSIONS.md (synced by pi-config-sync).
-  // Model: allow by default. Bash is delegated to the bash-safety extension
-  // (Jev-classified, with a deterministic credential hard block); this file
-  // only asks for credential access through the path-bearing file tools.
+  // Model: allow by default. Single bash commands are decided here by the globs
+  // below; compound or interpreter commands are classified by the bash-safety
+  // extension, which runs first. Credential access through the path-bearing file
+  // tools is asked in the `tools` section.
 
   "defaultPolicy": {
     "tools": "allow",
@@ -71,12 +72,96 @@
     "grep:*credential*": "ask"
   },
 
-  // Bash is owned by the bash-safety extension: every command is classified by
-  // Jev against the rules in bash-safety.jsonc, and credential paths are
-  // hard-blocked deterministically. Local deletes are intentionally allowed
-  // (the container root is an ephemeral overlay).
+  // Bash gating is split. bash-safety runs first and classifies only compound or
+  // interpreter commands; a single command lands here, where a glob decides it with
+  // no latency and no model call. Rules are last-match-wins, so the order below is
+  // broad allow -> asks -> denies.
   "bash": {
-    "*": "allow"
+    "*": "allow",
+
+    // ---- External-effect verbs ask ----
+    "git push*": "ask",
+    "* git push*": "ask",
+    "gh *": "ask",
+    "* gh *": "ask",
+    "aws *": "ask",
+    "* aws *": "ask",
+    "gcloud *": "ask",
+    "* gcloud *": "ask",
+    "az *": "ask",
+    "* az *": "ask",
+    "kubectl *": "ask",
+    "* kubectl *": "ask",
+    "terraform *": "ask",
+    "* terraform *": "ask",
+    "docker push*": "ask",
+    "* docker push*": "ask",
+    "npm publish*": "ask",
+    "* npm publish*": "ask",
+    "ssh *": "ask",
+    "* ssh *": "ask",
+    "scp *": "ask",
+    "* scp *": "ask",
+    "rsync *": "ask",
+    "* rsync *": "ask",
+    "*curl*-d *": "ask",
+    "*curl*--data*": "ask",
+    "*curl*-T *": "ask",
+    "*curl*--upload-file*": "ask",
+    "*wget*--post-data*": "ask",
+    "*wget*--post-file*": "ask",
+    "sudo *": "ask",
+    "* sudo *": "ask",
+
+    // ---- Credential deny backstop ----
+    // bash-safety's matcher blocks these first and short-circuits. These rules are
+    // what keeps them blocked when the gate is switched off with /bash-safety off.
+    // tests/lib.test.ts asserts this list equals bash-safety.jsonc's
+    // hardBlock.patterns, so the duplication cannot drift.
+    "*auth.json*": "deny",
+    "*.pi/agent/auth*": "deny",
+    "*.git-credentials*": "deny",
+    "*.netrc*": "deny",
+    "*.npmrc*": "deny",
+    "*.ssh*": "deny",
+    "*.aws*": "deny",
+    "*.config/gh*": "deny",
+    "*.docker/config.json*": "deny",
+    "*.env*": "deny",
+    "*token*": "deny",
+    "*secret*": "deny",
+    "*credential*": "deny",
+
+    // ---- Env templates are not secrets ----
+    // Globs cannot express a negative match, so the exemptions are re-allowed
+    // after the denies above.
+    "*.env.example*": "allow",
+    "*.env.sample*": "allow",
+    "*.env.template*": "allow",
+
+    // ---- Catastrophic deletes deny (declared last so they win) ----
+    // Deliberately no bare `*rm -rf /*` rule: it would also deny
+    // `rm -rf /workspace/build` and `rm -rf /tmp/x`, which the working-directory
+    // policy allows. Only the named system paths, home, and root-as-final-token.
+    "*rm -rf /usr*": "deny",
+    "*rm -fr /usr*": "deny",
+    "*rm -rf /bin*": "deny",
+    "*rm -fr /bin*": "deny",
+    "*rm -rf /sbin*": "deny",
+    "*rm -rf /lib*": "deny",
+    "*rm -rf /etc*": "deny",
+    "*rm -rf /var*": "deny",
+    "*rm -rf /boot*": "deny",
+    "*rm -rf /opt*": "deny",
+    "*rm -rf /root*": "deny",
+    "*rm -rf /sys*": "deny",
+    "*rm -rf /proc*": "deny",
+    "*rm -rf ~*": "deny",
+    "*rm -fr ~*": "deny",
+    "*rm -rf $HOME*": "deny",
+    "*rm -fr $HOME*": "deny",
+    "*rm -rf /": "deny",
+    "*rm -fr /": "deny"
   },
 
   "mcp": {

@@ -268,6 +268,117 @@ export function normalizeConfig(raw: unknown): BashSafetyConfig {
 }
 
 /**
+ * Commands whose first token is safe to run without consulting the classifier.
+ * The list mirrors extensions/readonly-bash.ts, plus `cd` so that
+ * `cd /workspace && git status` counts as a read-only chain.
+ */
+export const READ_ONLY_COMMANDS: string[] = [
+	"ls",
+	"cat",
+	"bat",
+	"head",
+	"tail",
+	"wc",
+	"grep",
+	"rg",
+	"find",
+	"fd",
+	"tree",
+	"pwd",
+	"which",
+	"type",
+	"file",
+	"stat",
+	"du",
+	"df",
+	"env",
+	"printenv",
+	"jq",
+	"sort",
+	"uniq",
+	"cut",
+	"tr",
+	"column",
+	"less",
+	"more",
+	"man",
+	"date",
+	"git status",
+	"git log",
+	"git diff",
+	"git show",
+	"git branch",
+	"git remote",
+	"git describe",
+	"git rev-parse",
+	"git ls-files",
+	"git blame",
+	"git config --get",
+	"cd",
+];
+
+/** Shell syntax that makes a command more than one command. */
+const SHELL_METACHARACTERS = /[;&|><`]|\$\(|\n/;
+
+/** Syntax that writes, redirects, or hides a payload, so a chain cannot be trusted. */
+const OPAQUE_SYNTAX = /[<>`]|\$\(|\n/;
+
+/**
+ * Mutating forms that a first-token allowlist cannot see. Each of these starts
+ * with a command the allowlist trusts, so the flags have to be checked too.
+ */
+const MUTATING_FORMS =
+	/-delete|-exec|-ok|-fprint|--delete|\bsort\s+-\S*o|\bdate\s+-\S*s|\benv\s+\S+=|\bgit\s+branch\s+-\S*[dDmMu]|\bgit\s+remote\s+(add|remove|rm|rename|set-url|set-head|prune|update)/;
+
+/**
+ * Interpreters invoked with an inline payload. These are single commands with no
+ * shell metacharacter, so a chained-only rule would let them through unread.
+ */
+const INTERPRETER_PAYLOADS: RegExp[] = [
+	/(^|[\s;&|(])(bash|sh|zsh|dash)\s+-\S*c\b/,
+	/(^|[\s;&|(])(python|python3)\s+-\S*c\b/,
+	/(^|[\s;&|(])node\s+(-e|--eval)\b/,
+	/(^|[\s;&|(])perl\s+-\S*e\b/,
+	/(^|[\s;&|(])ruby\s+-\S*e\b/,
+	/(^|[\s;&|(])php\s+-\S*r\b/,
+	/(^|[\s;&|(])eval\s/,
+	/(^|[\s;&|(])xargs\b[^;&|]*\b(bash|sh|zsh|dash)\s+-\S*c\b/,
+];
+
+/**
+ * True when the command is more than one command, or hides a payload inside an
+ * interpreter. Only these need the classifier; everything else a glob can decide.
+ */
+export function isCompoundOrInterpreter(command: string): boolean {
+	if (typeof command !== "string" || command.trim() === "") return false;
+	if (SHELL_METACHARACTERS.test(command)) return true;
+	return INTERPRETER_PAYLOADS.some((pattern) => pattern.test(command));
+}
+
+function isReadOnlySegment(segment: string): boolean {
+	const trimmed = segment.trim();
+	if (trimmed === "") return false;
+	return READ_ONLY_COMMANDS.some((prefix) => trimmed === prefix || trimmed.startsWith(`${prefix} `));
+}
+
+/**
+ * True when a compound command is only reads: every segment's first token is in
+ * the read-only allowlist and nothing redirects, writes, or substitutes. Keeps
+ * `git status && git diff` instant while leaving anything unrecognised to Jev.
+ */
+export function isReadOnlyChain(command: string): boolean {
+	if (typeof command !== "string" || command.trim() === "") return false;
+	if (OPAQUE_SYNTAX.test(command)) return false;
+	if (MUTATING_FORMS.test(command)) return false;
+	const segments = command
+		.split(/;|&&|\|\||\||&/)
+		.map((segment) => segment.trim())
+		.filter((segment) => segment !== "");
+	if (segments.length === 0) return false;
+	return segments.every(isReadOnlySegment);
+}
+
+/**
  * The working directories sent to the classifier: the configured list plus the session cwd,
  * trimmed, de-duplicated, and with trailing slashes removed.
  */

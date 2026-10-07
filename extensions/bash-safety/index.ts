@@ -32,6 +32,8 @@ import {
 	effectiveWorkingDirectories,
 	formatDistribution,
 	hardBlockReason,
+	isCompoundOrInterpreter,
+	isReadOnlyChain,
 	matchHardBlock,
 	normalizeConfig,
 	parseJsonc,
@@ -78,6 +80,8 @@ interface GateState {
 	intent: IntentSnapshot;
 	git: { remote: string; branch: string } | undefined;
 	pendingUsage: Map<string, UsageTotals>;
+	/** Session-scoped gate switch, initialised from config.enabled and flipped by /bash-safety on|off. */
+	enabled: boolean;
 	lastVerdict: string;
 	yoloNotified: boolean;
 	configNotified: boolean;
@@ -211,6 +215,7 @@ function resetState(ctx: ExtensionContext): GateState {
 		intent: readIntent(ctx, loaded.config.maxIntentChars),
 		git: readGit(ctx.cwd),
 		pendingUsage: new Map<string, UsageTotals>(),
+		enabled: loaded.config.enabled,
 		lastVerdict: "none",
 		yoloNotified: false,
 		configNotified: false,
@@ -324,13 +329,25 @@ async function classify(command: string, ctx: ExtensionContext, state: GateState
 async function gate(command: unknown, toolCallId: string, ctx: ExtensionContext): Promise<ToolCallEventResult | undefined> {
 	if (typeof command !== "string" || command.trim() === "") return undefined;
 	const state = ensureState(ctx);
-	if (!state.config.enabled) return undefined;
+	if (!state.enabled) return undefined;
 
 	const pattern = matchHardBlock(command, state.config.hardBlock.patterns, state.config.hardBlock.exemptions);
 	if (pattern) {
 		state.lastVerdict = `hard-block (${pattern})`;
 		notify(ctx, `bash-safety: blocked credential access matching "${pattern}"`, "error");
 		return { block: true, reason: hardBlockReason(pattern) };
+	}
+
+	// Deterministic layers first. A single command with no shell syntax is decided by
+	// pi-permission-system's globs, which run after this handler; only compound or
+	// opaque commands need the classifier.
+	if (!isCompoundOrInterpreter(command)) {
+		state.lastVerdict = "passthrough (simple command)";
+		return undefined;
+	}
+	if (isReadOnlyChain(command)) {
+		state.lastVerdict = "passthrough (read-only chain)";
+		return undefined;
 	}
 
 	const key = cacheKey(command, state.intent);
@@ -390,7 +407,7 @@ function statusLine(state: GateState): string {
 	const yolo = state.config.usePermissionSystemYolo ? (readYolo(state.config) ? "on" : "off") : "disabled";
 	const configNote = state.configStatus === "loaded" ? "loaded" : state.configStatus;
 	return [
-		`bash-safety: enabled=${state.config.enabled ? "yes" : "no"}`,
+		`bash-safety: enabled=${state.enabled ? "yes" : "no"} (${state.enabled ? "credentials + compound commands" : "declarative globs only"})`,
 		`model=${state.config.model.provider}/${state.config.model.id}`,
 		`yolo=${yolo} (shared with pi-permission-system)`,
 		`breaker=${state.breaker.tripped ? "open" : "closed"}`,
@@ -440,6 +457,18 @@ export default function bashSafetyExtension(pi: ExtensionAPI): void {
 				case "":
 				case "status": {
 					notify(ctx, statusLine(state), "info");
+					return;
+				}
+				case "on":
+				case "off": {
+					state.enabled = sub === "on";
+					notify(
+						ctx,
+						state.enabled
+							? "bash-safety: on — credentials are hard-blocked and compound or interpreter commands are classified"
+							: "bash-safety: off — only pi-permission-system's declarative globs gate bash now",
+						state.enabled ? "info" : "warning",
+					);
 					return;
 				}
 				case "yolo": {
@@ -499,7 +528,11 @@ export default function bashSafetyExtension(pi: ExtensionAPI): void {
 					return;
 				}
 				default: {
-					notify(ctx, "bash-safety: usage: /bash-safety [status|yolo [on|off|toggle]|check <command>|reload]", "warning");
+					notify(
+						ctx,
+						"bash-safety: usage: /bash-safety [status|on|off|yolo [on|off|toggle]|check <command>|reload]",
+						"warning",
+					);
 				}
 			}
 		},

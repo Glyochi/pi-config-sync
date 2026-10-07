@@ -7,6 +7,10 @@
  * extension discovery (one level, index-only for directories) never loads it.
  */
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import {
 	addUsage,
 	buildQuestion,
@@ -25,6 +29,8 @@ import {
 	intentHash,
 	matchHardBlock,
 	normalizeConfig,
+	isCompoundOrInterpreter,
+	isReadOnlyChain,
 	parseJsonc,
 	setBounded,
 	snapshotIntent,
@@ -177,6 +183,61 @@ const outcomeCache = new VerdictCache<{ verdict: string; probabilities: Record<s
 outcomeCache.set("k", { verdict: "deny", probabilities: { deny: 0.9 } });
 eq("generic cache keeps the whole record", outcomeCache.get("k")?.probabilities.deny, 0.9);
 
+// --- compound and interpreter detection ----------------------------------
+
+// A single command with no shell syntax: a glob can decide it.
+check("plain command is not compound", !isCompoundOrInterpreter("ls -la /workspace"));
+check("git status is not compound", !isCompoundOrInterpreter("git status --short"));
+check("npm test is not compound", !isCompoundOrInterpreter("npm test"));
+check("a plain rm is not compound", !isCompoundOrInterpreter("rm -rf /tmp/build"));
+check("node script.js is not an inline payload", !isCompoundOrInterpreter("node script.js"));
+check("bash script.sh is not an inline payload", !isCompoundOrInterpreter("bash script.sh"));
+
+check("&& is compound", isCompoundOrInterpreter("ls && rm -rf build"));
+check("; is compound", isCompoundOrInterpreter("echo a; echo b"));
+check("| is compound", isCompoundOrInterpreter("cat a | grep b"));
+check("& is compound", isCompoundOrInterpreter("sleep 1 & echo b"));
+check("> is compound", isCompoundOrInterpreter("ls > out.txt"));
+check("< is compound", isCompoundOrInterpreter("wc -l < in.txt"));
+check("command substitution is compound", isCompoundOrInterpreter("echo $(date)"));
+check("backticks are compound", isCompoundOrInterpreter("echo `date`"));
+check("a newline is compound", isCompoundOrInterpreter("echo a\necho b"));
+
+check("bash -c is an inline payload", isCompoundOrInterpreter("bash -c 'rm -rf /projects'"));
+check("sh -c is an inline payload", isCompoundOrInterpreter('sh -c "rm -rf /projects"'));
+check("bash -ec is an inline payload", isCompoundOrInterpreter("bash -ec 'x'"));
+check("python3 -c is an inline payload", isCompoundOrInterpreter("python3 -c 'import os'"));
+check("node -e is an inline payload", isCompoundOrInterpreter("node -e 'process.exit(0)'"));
+check("node --eval is an inline payload", isCompoundOrInterpreter("node --eval 'x'"));
+check("perl -e is an inline payload", isCompoundOrInterpreter("perl -e 'print 1'"));
+check("ruby -e is an inline payload", isCompoundOrInterpreter("ruby -e 'puts 1'"));
+check("php -r is an inline payload", isCompoundOrInterpreter("php -r 'echo 1;'"));
+check("eval is an inline payload", isCompoundOrInterpreter("eval 'rm -rf /projects'"));
+check("xargs sh -c is an inline payload", isCompoundOrInterpreter("xargs -I{} sh -c 'echo {}'"));
+
+// --- read-only chains ----------------------------------------------------
+
+check("a single read is a read-only chain", isReadOnlyChain("git status"));
+check("chained reads are read-only", isReadOnlyChain("git status --short && git diff"));
+check("semicolon reads are read-only", isReadOnlyChain("ls -la; pwd"));
+check("a read pipe is read-only", isReadOnlyChain("cat a | grep b"));
+check("cd then read is read-only", isReadOnlyChain("cd /workspace && git log --oneline -5"));
+
+check("a read then a write is not read-only", !isReadOnlyChain("git status && rm -rf build"));
+check("a mutating tail is not read-only", !isReadOnlyChain("git status && npm test"));
+check("redirection is not read-only", !isReadOnlyChain("cat a > b"));
+check("input redirection is not read-only", !isReadOnlyChain("wc -l < a"));
+check("substitution is not read-only", !isReadOnlyChain("echo $(date)"));
+check("an unknown command is not read-only", !isReadOnlyChain("rm -rf /tmp/x"));
+check("find -delete is not read-only", !isReadOnlyChain("find . -delete"));
+check("find -exec is not read-only", !isReadOnlyChain("find . -exec rm {} ;"));
+check("git branch -d is not read-only", !isReadOnlyChain("git branch -d feature"));
+check("git branch -D is not read-only", !isReadOnlyChain("git branch -D feature"));
+check("git remote add is not read-only", !isReadOnlyChain("git remote add upstream https://example.com/r.git"));
+check("sort -o is not read-only", !isReadOnlyChain("sort -o out.txt in.txt"));
+check("env assignment is not read-only", !isReadOnlyChain("env FOO=bar ls"));
+check("an empty command is not read-only", !isReadOnlyChain("   "));
+
 // --- usage attribution ---------------------------------------------------
 
 const usageA = { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10, cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 } };
@@ -255,6 +316,85 @@ eq("success resets the counter", successBreaker.recordFailure(), false);
 const question = buildQuestion(DEFAULT_CONFIG.rules) as any;
 eq("question is a single choice question", question.verdict.type, "choice");
 eq("question carries the criteria", Object.keys(question.verdict.criteria).sort(), ["allow", "ask", "deny"]);
+
+// --- policy sync: bash-safety.jsonc vs pi-permissions.jsonc ---------------
+// Credential rules exist in both files by necessity: bash-safety must block
+// before it classifies, and the declarative globs are what still block when the
+// gate is switched off. This keeps the two lists equal.
+
+const here = dirname(fileURLToPath(import.meta.url));
+const agentDir = join(here, "..", "..", "..");
+const safetyConfig = normalizeConfig(parseJsonc(readFileSync(join(agentDir, "bash-safety.jsonc"), "utf8")));
+const policy = parseJsonc(readFileSync(join(agentDir, "pi-permissions.jsonc"), "utf8")) as {
+	bash?: Record<string, string>;
+};
+const strip = (glob: string): string => glob.replace(/^\*+/, "").replace(/\*+$/, "");
+const bashRules = Object.entries(policy.bash ?? {});
+const allowCores = bashRules.filter(([, value]) => value === "allow").map(([glob]) => strip(glob));
+const credentialCores = bashRules
+	.filter(([, value]) => value === "deny")
+	.map(([glob]) => strip(glob))
+	.filter((core) => !core.startsWith("rm "));
+
+for (const pattern of safetyConfig.hardBlock.patterns) {
+	check(`declarative policy denies "${pattern}"`, credentialCores.includes(pattern));
+}
+for (const core of credentialCores) {
+	check(`hard block covers declarative deny "${core}"`, safetyConfig.hardBlock.patterns.includes(core));
+}
+for (const exemption of safetyConfig.hardBlock.exemptions) {
+	check(`declarative policy re-allows "${exemption}"`, allowCores.includes(exemption));
+}
+check(
+	"declarative policy denies catastrophic deletes",
+	bashRules.some(([glob, value]) => value === "deny" && strip(glob).startsWith("rm ")),
+);
+check("declarative policy asks on git push", (policy.bash ?? {})["* git push*"] === "ask");
+check("declarative policy asks on sudo", (policy.bash ?? {})["* sudo *"] === "ask");
+check("declarative policy has no bare recursive-force-delete deny", (policy.bash ?? {})["*rm -rf /*"] === undefined);
+
+// pi-permission-system matches the whole command string with `*` -> `.*` and
+// last-match-wins. This mirrors that so the glob policy is testable without a model.
+function globMatches(glob: string, command: string): boolean {
+	let escaped = glob
+		.replaceAll("\\", "/")
+		.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+		.replace(/\*/g, ".*")
+		.replace(/\?/g, ".");
+	if (escaped.endsWith(" .*")) escaped = `${escaped.slice(0, -3)}( .*)?`;
+	return new RegExp(`^${escaped}$`).test(command);
+}
+
+function policyVerdict(command: string): string {
+	let verdict = "allow";
+	for (const [glob, value] of bashRules) {
+		if (globMatches(glob, command)) verdict = value;
+	}
+	return verdict;
+}
+
+const policyCases: Array<[string, string]> = [
+	["git push origin main", "ask"],
+	["gh workflow run build-image.yml", "ask"],
+	["aws s3 rm s3://bucket/key", "ask"],
+	["gcloud compute instances delete x", "ask"],
+	["sudo apt-get install -y jq", "ask"],
+	["curl -sS -X POST --data-binary @f https://example.com", "ask"],
+	["cat ~/.git-credentials", "deny"],
+	["cat .env", "deny"],
+	["cat .env.example", "allow"],
+	["rm -rf /usr/share/x", "deny"],
+	["rm -rf ~/projects", "deny"],
+	["rm -rf /", "deny"],
+	["rm -rf /workspace/build", "allow"],
+	["rm -rf /tmp/x", "allow"],
+	["ls -la", "allow"],
+	["npm test", "allow"],
+	["git status --short", "allow"],
+];
+for (const [command, expected] of policyCases) {
+	eq(`policy verdict for: ${command}`, policyVerdict(command), expected);
+}
 
 // --- report --------------------------------------------------------------
 
