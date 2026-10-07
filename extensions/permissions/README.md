@@ -48,6 +48,10 @@ nothing is written, so `/permissions reload` restores the file's value. `/permis
 status` reports the threshold, the model, the call count, and the counters: the raw
 verdict crossed with the confidence side, so `high + low` is the call total.
 
+The editor completes `/permissions` arguments as you type: subcommands, `on|off` for the
+switches, threshold presets, and `check` tool names. An unknown subcommand prints the
+same list as an aligned usage block.
+
 ## Running the tests
 
 Deterministic suites, no credentials or network needed:

@@ -130,6 +130,10 @@ extension. Other extensions share that line and it is sorted by key, so `git-syn
   0..1 is rejected with a warning and `/permissions reload` restores the file's value.
 - `/permissions reload` — re-read `permissions.jsonc`.
 
+Typing `/permissions ` suggests the subcommands as you go, then their values: `on|off`
+for the switches, threshold presets, and `check` tool names. A bare `/permissions bogus`
+prints the same list as a usage block.
+
 ## Where each behaviour is configured
 
 | To change | Edit |
