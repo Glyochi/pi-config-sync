@@ -31,6 +31,7 @@ export interface BashSafetyConfig {
 	usePermissionSystemYolo: boolean;
 	workingDirectories: string[];
 	hardBlock: { patterns: string[]; exemptions: string[] };
+	catastrophe: { paths: string[]; commands: string[]; forms: string[] };
 	rules: BashSafetyRules;
 }
 
@@ -62,6 +63,60 @@ export const DEFAULT_HARD_BLOCK_EXEMPTIONS: string[] = [".env.example", ".env.sa
 
 /** Where the task's files normally live; the session cwd is always added at runtime. */
 export const DEFAULT_WORKING_DIRECTORIES: string[] = ["/workspace", "/tmp"];
+
+/**
+ * Directories whose modification is treated as unrecoverable. `catastrophe.paths`
+ * and `catastrophe.commands` are listed separately and combined at match time, so
+ * adding one entry covers it against every entry of the other list.
+ */
+export const DEFAULT_CATASTROPHE_PATHS: string[] = [
+	"/",
+	"/usr",
+	"/bin",
+	"/sbin",
+	"/lib",
+	"/lib64",
+	"/etc",
+	"/var",
+	"/boot",
+	"/opt",
+	"/root",
+	"/sys",
+	"/proc",
+	"/dev",
+	"~",
+	"$HOME",
+];
+
+/** Command words that modify whatever path they are handed. */
+export const DEFAULT_CATASTROPHE_COMMANDS: string[] = [
+	"rm",
+	"rmdir",
+	"unlink",
+	"shred",
+	"truncate",
+	"mv",
+	"cp",
+	"chmod",
+	"chown",
+	"chgrp",
+	"chattr",
+	"ln",
+	"install",
+	"tee",
+	"dd",
+	"mkfs",
+	"wipefs",
+	"mount",
+	"umount",
+	"blkdiscard",
+];
+
+/**
+ * Multi-token forms that are destructive wherever they appear, so the command
+ * word alone is not enough to see them.
+ */
+export const DEFAULT_CATASTROPHE_FORMS: string[] = ["sed -i", "-delete", "-exec", "--delete", "of="];
 
 export const DEFAULT_ENVIRONMENT = [
 	"The agent runs inside a disposable Docker container (linux-quick-setup image).",
@@ -118,6 +173,11 @@ export const DEFAULT_CONFIG: BashSafetyConfig = {
 	usePermissionSystemYolo: true,
 	workingDirectories: DEFAULT_WORKING_DIRECTORIES,
 	hardBlock: { patterns: DEFAULT_HARD_BLOCK_PATTERNS, exemptions: DEFAULT_HARD_BLOCK_EXEMPTIONS },
+	catastrophe: {
+		paths: DEFAULT_CATASTROPHE_PATHS,
+		commands: DEFAULT_CATASTROPHE_COMMANDS,
+		forms: DEFAULT_CATASTROPHE_FORMS,
+	},
 	rules: {
 		environment: DEFAULT_ENVIRONMENT,
 		instructions: DEFAULT_INSTRUCTIONS,
@@ -236,6 +296,7 @@ export function normalizeConfig(raw: unknown): BashSafetyConfig {
 	if (!isRecord(raw)) return { ...DEFAULT_CONFIG, rules: { ...DEFAULT_CONFIG.rules, criteria: { ...DEFAULT_CRITERIA } } };
 	const model = isRecord(raw.model) ? raw.model : {};
 	const hardBlock = isRecord(raw.hardBlock) ? raw.hardBlock : {};
+	const catastrophe = isRecord(raw.catastrophe) ? raw.catastrophe : {};
 	const rules = isRecord(raw.rules) ? raw.rules : {};
 	const criteria = isRecord(rules.criteria) ? rules.criteria : {};
 	return {
@@ -254,6 +315,11 @@ export function normalizeConfig(raw: unknown): BashSafetyConfig {
 		hardBlock: {
 			patterns: asStringArray(hardBlock.patterns, DEFAULT_HARD_BLOCK_PATTERNS),
 			exemptions: asStringArray(hardBlock.exemptions, DEFAULT_HARD_BLOCK_EXEMPTIONS),
+		},
+		catastrophe: {
+			paths: asStringArray(catastrophe.paths, DEFAULT_CATASTROPHE_PATHS),
+			commands: asStringArray(catastrophe.commands, DEFAULT_CATASTROPHE_COMMANDS),
+			forms: asStringArray(catastrophe.forms, DEFAULT_CATASTROPHE_FORMS),
 		},
 		rules: {
 			environment: asString(rules.environment, DEFAULT_ENVIRONMENT),
@@ -429,6 +495,148 @@ export function hardBlockReason(pattern: string): string {
 		`Blocked by the bash-safety credential gate: the command references "${pattern}". ` +
 		"Credential and secret paths are blocked deterministically and cannot be approved. " +
 		"If a non-secret file is needed, read it with a path that does not match the gate."
+	);
+}
+
+export interface CatastropheMatch {
+	command: string;
+	path: string;
+}
+
+const SEGMENT_SEPARATOR = /;|&&|\|\||\||&|\n/;
+
+/** Wrappers that run another command, so the real command word comes later. */
+const COMMAND_WRAPPERS = new Set([
+	"sudo",
+	"env",
+	"nohup",
+	"nice",
+	"ionice",
+	"time",
+	"timeout",
+	"xargs",
+	"command",
+	"exec",
+	"setsid",
+	"stdbuf",
+]);
+
+/** Redirection sinks that are not destructive targets. */
+const SAFE_REDIRECT_TARGETS = new Set(["/dev/null", "/dev/stdout", "/dev/stderr"]);
+
+function bareName(token: string): string {
+	return token.split("/").pop() ?? token;
+}
+
+function looksLikeFlagOrAssignment(token: string): boolean {
+	// A duration argument (`timeout 5 chmod …`) is skipped too: a command word is
+	// never a bare number.
+	return token.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(token) || /^\d+[smhd]?$/.test(token);
+}
+
+/**
+ * The command word of one segment, skipping leading wrappers and their own flags.
+ * A wrapper given a value-taking flag (`sudo -u root chmod …`) hides the real
+ * command; that is a documented limitation.
+ */
+export function commandWordOf(segment: string): string | undefined {
+	const tokens = segment.trim().split(/\s+/).filter((token) => token !== "");
+	let index = 0;
+	while (index < tokens.length) {
+		const token = tokens[index] as string;
+		if (COMMAND_WRAPPERS.has(bareName(token))) {
+			index += 1;
+			while (index < tokens.length && looksLikeFlagOrAssignment(tokens[index] as string)) index += 1;
+			continue;
+		}
+		return bareName(token);
+	}
+	return undefined;
+}
+
+function cleanToken(token: string): string {
+	return token
+		.replace(/^[A-Za-z_][A-Za-z0-9_]*=/, "")
+		.replace(/^["']+/, "")
+		.replace(/["']+$/, "")
+		.replace(/[;,)]+$/, "");
+}
+
+function pathTokenMatches(token: string, path: string): boolean {
+	const normalized = path.replace(/\/+$/, "");
+	if (normalized === "") return token === "/";
+	return token === normalized || token.startsWith(`${normalized}/`);
+}
+
+/** The first catastrophic path a piece of text references as a path token. */
+function referencedPath(text: string, paths: string[]): string | undefined {
+	for (const raw of text.split(/\s+/)) {
+		const token = cleanToken(raw);
+		if (token === "") continue;
+		for (const path of paths) {
+			if (pathTokenMatches(token, path)) return path;
+		}
+	}
+	return undefined;
+}
+
+function redirectionTargets(command: string): string[] {
+	const targets: string[] = [];
+	const pattern = /(?:>>?|&>)\s*([^\s;|&]+)/g;
+	let match = pattern.exec(command);
+	while (match !== null) {
+		const target = match[1];
+		if (target !== undefined) targets.push(cleanToken(target));
+		match = pattern.exec(command);
+	}
+	return targets;
+}
+
+/**
+ * Whether a command modifies a catastrophic directory.
+ *
+ * `paths` and `commands` are listed separately and combined here, so one new
+ * entry covers every combination with the other list. The command word is matched
+ * at command position rather than anywhere in the string, so prose like
+ * `git commit -m "fix rm handling in /etc"` is not blocked, and redirection targets
+ * are parsed rather than substring-matched, so `cat /etc/hosts > /tmp/x` stays
+ * allowed while `echo x > /etc/hosts` does not.
+ */
+export function matchCatastrophe(
+	command: string,
+	catastrophe: { paths: string[]; commands: string[]; forms: string[] },
+): CatastropheMatch | undefined {
+	if (typeof command !== "string" || command.trim() === "") return undefined;
+	const { paths, commands, forms } = catastrophe;
+
+	for (const target of redirectionTargets(command)) {
+		if (SAFE_REDIRECT_TARGETS.has(target)) continue;
+		const path = referencedPath(target, paths);
+		if (path !== undefined) return { command: ">", path };
+	}
+
+	for (const segment of command.split(SEGMENT_SEPARATOR)) {
+		const trimmed = segment.trim();
+		if (trimmed === "") continue;
+		const path = referencedPath(trimmed, paths);
+		if (path === undefined) continue;
+		const word = commandWordOf(trimmed);
+		if (word !== undefined) {
+			const hit = commands.find((entry) => entry !== "" && (word === entry || word.startsWith(`${entry}.`)));
+			if (hit !== undefined) return { command: word, path };
+		}
+		const form = forms.find((entry) => entry !== "" && trimmed.includes(entry));
+		if (form !== undefined) return { command: form, path };
+	}
+	return undefined;
+}
+
+/** Reason text returned to the model when the catastrophe gate blocks a command. */
+export function catastropheReason(match: CatastropheMatch): string {
+	return (
+		`Blocked by the bash-safety catastrophe gate: '${match.command}' targets '${match.path}'. ` +
+		"Modifying that directory is never approved, even deliberately. " +
+		"Work inside the working directories, or switch the gate off with /bash-safety off."
 	);
 }
 

@@ -26,6 +26,7 @@ import {
 	buildQuestion,
 	capText,
 	cacheKey,
+	catastropheReason,
 	CircuitBreaker,
 	confirmMessage,
 	decide,
@@ -34,6 +35,7 @@ import {
 	hardBlockReason,
 	isCompoundOrInterpreter,
 	isReadOnlyChain,
+	matchCatastrophe,
 	matchHardBlock,
 	normalizeConfig,
 	parseJsonc,
@@ -336,6 +338,15 @@ async function gate(command: unknown, toolCallId: string, ctx: ExtensionContext)
 		state.lastVerdict = `hard-block (${pattern})`;
 		notify(ctx, `bash-safety: blocked credential access matching "${pattern}"`, "error");
 		return { block: true, reason: hardBlockReason(pattern) };
+	}
+
+	// Any modification of a catastrophic directory is refused outright, not just
+	// rm -rf: chmod, mv, dd, sed -i, find -delete, a redirect into /etc, and the rest.
+	const catastrophe = matchCatastrophe(command, state.config.catastrophe);
+	if (catastrophe !== undefined) {
+		state.lastVerdict = `catastrophe (${catastrophe.command} ${catastrophe.path})`;
+		notify(ctx, `bash-safety: blocked '${catastrophe.command}' targeting ${catastrophe.path}`, "error");
+		return { block: true, reason: catastropheReason(catastrophe) };
 	}
 
 	// Deterministic layers first. A single command with no shell syntax is decided by

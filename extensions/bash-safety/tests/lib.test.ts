@@ -16,8 +16,13 @@ import {
 	buildQuestion,
 	capText,
 	cacheKey,
+	catastropheReason,
 	CircuitBreaker,
+	commandWordOf,
 	confirmMessage,
+	DEFAULT_CATASTROPHE_COMMANDS,
+	DEFAULT_CATASTROPHE_FORMS,
+	DEFAULT_CATASTROPHE_PATHS,
 	DEFAULT_CONFIG,
 	DEFAULT_CRITERIA,
 	DEFAULT_WORKING_DIRECTORIES,
@@ -27,6 +32,7 @@ import {
 	hashText,
 	hardBlockReason,
 	intentHash,
+	matchCatastrophe,
 	matchHardBlock,
 	normalizeConfig,
 	isCompoundOrInterpreter,
@@ -317,6 +323,86 @@ const question = buildQuestion(DEFAULT_CONFIG.rules) as any;
 eq("question is a single choice question", question.verdict.type, "choice");
 eq("question carries the criteria", Object.keys(question.verdict.criteria).sort(), ["allow", "ask", "deny"]);
 
+// --- catastrophe gate -----------------------------------------------------
+// `paths` and `commands` are combined at match time, so these cases cover the
+// cross product without it being written out anywhere.
+
+const catastrophe = DEFAULT_CONFIG.catastrophe;
+
+for (const command of [
+	"rm -rf /usr/share/x",
+	"rm -rf /",
+	"rm -rf ~/projects",
+	"rm -rf $HOME/x",
+	"chmod -R 000 /usr",
+	"chmod +x /usr/local/bin/tool",
+	"chown -R dev:dev /etc",
+	"chgrp -R dev /var",
+	"mv /etc/hosts /tmp/",
+	"cp /etc/hosts /tmp/",
+	"truncate -s 0 /var/log/syslog",
+	"shred /etc/passwd",
+	"unlink /etc/hosts",
+	"dd if=/dev/zero of=/dev/sda",
+	"mkfs.ext4 /dev/sda1",
+	"install -m 644 /tmp/x /usr/local/bin/y",
+	"ln -sf /tmp/x /etc/hosts",
+	"echo x > /etc/hosts",
+	"echo x >> /var/log/x",
+	"sed -i 's/a/b/' /etc/hosts",
+	"find /usr -name '*.o' -delete",
+	"find /usr -name '*.o' -exec rm {} ;",
+	"rsync -a --delete /tmp/x /usr/",
+	"echo x | tee /etc/hosts",
+	"sudo chmod -R 000 /usr",
+	"timeout 5 chmod -R 000 /usr",
+	"xargs -0 chmod 000 /etc/x",
+	"echo a && chmod -R 000 /etc",
+]) {
+	check(`catastrophe denied: ${command}`, matchCatastrophe(command, catastrophe) !== undefined);
+}
+
+for (const command of [
+	"rm -rf /workspace/build",
+	"rm -rf /tmp/x",
+	"ls -la /usr",
+	"cat /etc/hosts",
+	"cat /etc/hosts > /tmp/x",
+	"grep -i foo /etc/hosts",
+	"sed -n '1p' /etc/hosts",
+	"find /usr -name '*.o'",
+	"umount /mnt",
+	"git commit -m \"fix rm handling in /etc\"",
+	"echo rm /etc",
+	"cmd 2>/dev/null",
+	"npm test",
+	"git status --short",
+]) {
+	check(`catastrophe allowed: ${command}`, matchCatastrophe(command, catastrophe) === undefined);
+}
+
+eq("catastrophe names the command and path", matchCatastrophe("chmod -R 000 /usr", catastrophe), {
+	command: "chmod",
+	path: "/usr",
+});
+eq("redirection match names the operator", matchCatastrophe("echo x > /etc/hosts", catastrophe), {
+	command: ">",
+	path: "/etc",
+});
+check(
+	"catastrophe reason names both",
+	catastropheReason({ command: "chmod", path: "/usr" }).includes("chmod") &&
+		catastropheReason({ command: "chmod", path: "/usr" }).includes("/usr"),
+);
+eq("command word skips sudo", commandWordOf("sudo chmod -R 000 /usr"), "chmod");
+eq("command word skips timeout and its duration", commandWordOf("timeout 5 chmod -R 000 /usr"), "chmod");
+eq("command word skips xargs flags", commandWordOf("xargs -0 chmod 000 /etc/x"), "chmod");
+eq("command word skips env assignments", commandWordOf("env FOO=bar ls"), "ls");
+eq("command word strips a path prefix", commandWordOf("/usr/bin/chmod 777 /tmp"), "chmod");
+eq("plain command word", commandWordOf("ls -la"), "ls");
+// Documented limitation: a wrapper's value-taking flag hides the real command.
+eq("wrapper flag hides the command", commandWordOf("sudo -u root chmod 000 /etc/passwd"), "root");
+
 // --- policy sync: bash-safety.jsonc vs pi-permissions.jsonc ---------------
 // Credential rules exist in both files by necessity: bash-safety must block
 // before it classifies, and the declarative globs are what still block when the
@@ -335,6 +421,10 @@ const credentialCores = bashRules
 	.filter(([, value]) => value === "deny")
 	.map(([glob]) => strip(glob))
 	.filter((core) => !core.startsWith("rm "));
+
+eq("config catastrophe paths match the defaults", safetyConfig.catastrophe.paths, DEFAULT_CATASTROPHE_PATHS);
+eq("config catastrophe commands match the defaults", safetyConfig.catastrophe.commands, DEFAULT_CATASTROPHE_COMMANDS);
+eq("config catastrophe forms match the defaults", safetyConfig.catastrophe.forms, DEFAULT_CATASTROPHE_FORMS);
 
 for (const pattern of safetyConfig.hardBlock.patterns) {
 	check(`declarative policy denies "${pattern}"`, credentialCores.includes(pattern));

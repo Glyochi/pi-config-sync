@@ -63,6 +63,66 @@
     "exemptions": [".env.example", ".env.sample", ".env.template"],
   },
 
+  // Catastrophe gate. `paths` and `commands` are listed separately and combined at
+  // match time, so adding one entry covers it against every entry of the other list.
+  // A command whose command word is in `commands`, or that contains a `forms` entry,
+  // and that targets one of `paths`, is denied outright: never a prompt, not even
+  // for a deliberate write into a system path. Matching is command-position aware,
+  // so `git commit -m "fix rm handling in /etc"` is not blocked, and redirection
+  // targets are parsed, so `cat /etc/hosts > /tmp/x` stays allowed while
+  // `echo x > /etc/hosts` does not.
+  "catastrophe": {
+    // Directories whose modification is unrecoverable.
+    "paths": [
+      "/",
+      "/usr",
+      "/bin",
+      "/sbin",
+      "/lib",
+      "/lib64",
+      "/etc",
+      "/var",
+      "/boot",
+      "/opt",
+      "/root",
+      "/sys",
+      "/proc",
+      "/dev",
+      "~",
+      "$HOME",
+    ],
+
+    // Command words that modify whatever path they are handed. `cp` and `ln` are
+    // here because overwriting a system path is the risk; the cost is that copying
+    // a file *out* of one of these directories is also denied.
+    "commands": [
+      "rm",
+      "rmdir",
+      "unlink",
+      "shred",
+      "truncate",
+      "mv",
+      "cp",
+      "chmod",
+      "chown",
+      "chgrp",
+      "chattr",
+      "ln",
+      "install",
+      "tee",
+      "dd",
+      "mkfs",
+      "wipefs",
+      "mount",
+      "umount",
+      "blkdiscard",
+    ],
+
+    // Multi-token forms that are destructive wherever they appear, so the command
+    // word alone cannot see them (`find /usr -name '*.o' -delete`).
+    "forms": ["sed -i", "-delete", "-exec", "--delete", "of="],
+  },
+
   "rules": {
     "environment": "The agent runs inside a disposable Docker container (linux-quick-setup image).\n- uid 1000 (dev), CapEff=0, no docker socket: no privilege escalation, no container escape.\n- / is an ephemeral overlay; package installs and /etc edits vanish when the container is recreated.\n- Persistent: /workspace (the host project directory, normally a git repo) plus the pi-auth, pi-sessions, and pi-state named volumes.\n- Outbound network access is available.\n- The workingDirectories list is where the task's files live. Deleting inside those directories is low risk (git-tracked or regenerable). Deleting outside them can damage the container or the mounted project and counts as destructive. Credential files are hard-blocked before this classifier runs, so they never reach it.",
 
