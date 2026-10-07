@@ -35,6 +35,8 @@ import {
 	describeCheckFailure,
 	describeCheckJev,
 	effectiveVerdict,
+	emptyJevCounters,
+	formatJevCounters,
 	hasDestructiveIntent,
 	isLowConfidence,
 	verdictConfidence,
@@ -45,7 +47,9 @@ import {
 	needsJudgement,
 	modeFromEntries,
 	parseForwardedResponse,
+	parseThreshold,
 	permissionIndicator,
+	recordClassification,
 	modeFromEntryData,
 	PLAN_BUILD_STATE_TYPE,
 	normalizePath,
@@ -443,14 +447,95 @@ eq("plain command word", commandWordOf("ls -la"), "ls");
 eq("wrapper flag hides the command", commandWordOf("sudo -u root chmod 000 /etc/passwd"), "root");
 
 // --- footer indicator -----------------------------------------------------
-// The two switches, or that the gate is off. A disabled gate must not report switch
-// values, which would describe a gate that is not running.
+// The two switches, the threshold, the model and the call count, or that the gate is
+// off. A disabled gate must not report switch values, which would describe a gate that
+// is not running. Only `jev on` and `yolo on` carry a colour.
 
-eq("the indicator shows both switches", permissionIndicator({ enabled: true, jev: true, yolo: false }).text, "jev on · yolo off");
-eq("both switches off reads plainly", permissionIndicator({ enabled: true, jev: false, yolo: false }).text, "jev off · yolo off");
-eq("the indicator warns under yolo", permissionIndicator({ enabled: true, jev: false, yolo: true }).warn, true);
-eq("the indicator does not warn otherwise", permissionIndicator({ enabled: true, jev: true, yolo: false }).warn, false);
-eq("a disabled gate says so", permissionIndicator({ enabled: false, jev: true, yolo: true }), { text: "permissions off", warn: false });
+const indicator = permissionIndicator({ enabled: true, jev: true, yolo: false, threshold: 0.3, model: "jev-1.13", calls: 0 });
+eq("the indicator shows both switches, the threshold and the model", indicator.text, "jev on · yolo off · thr 0.30 · jev-1.13");
+eq(
+	"the call count appears once anything has been classified",
+	permissionIndicator({ enabled: true, jev: false, yolo: false, threshold: 0.3, model: "jev-1.13", calls: 3 }).text,
+	"jev off · yolo off · thr 0.30 · jev-1.13 · 3 reqs",
+);
+eq("the threshold is formatted to two places", indicator.segments[2]?.text, "thr 0.30");
+eq("the model segment is the bare id", indicator.segments[3]?.text, "jev-1.13");
+eq(
+	"only jev on is coloured, in the warning colour",
+	indicator.segments.map((segment) => segment.color ?? null),
+	["warning", null, null, null],
+);
+eq(
+	"only yolo on is coloured, in the error colour",
+	permissionIndicator({ enabled: true, jev: false, yolo: true, threshold: 0.3, model: "jev-1.13", calls: 0 }).segments.map(
+		(segment) => segment.color ?? null,
+	),
+	[null, "error", null, null],
+);
+eq(
+	"a disabled gate says so, uncoloured",
+	permissionIndicator({ enabled: false, jev: true, yolo: true, threshold: 0.3, model: "jev-1.13", calls: 4 }),
+	{ text: "permissions off", segments: [{ text: "permissions off" }] },
+);
+
+// --- threshold parsing ----------------------------------------------------
+
+eq("a decimal threshold parses", parseThreshold("0.5"), 0.5);
+eq("the lower boundary parses", parseThreshold("0"), 0);
+eq("the upper boundary parses", parseThreshold("1"), 1);
+eq("surrounding space is fine", parseThreshold(" 0.75 "), 0.75);
+eq("above one is rejected", parseThreshold("1.1"), undefined);
+eq("below zero is rejected", parseThreshold("-0.1"), undefined);
+eq("a non-number is rejected", parseThreshold("soon"), undefined);
+eq("an empty value is rejected", parseThreshold(""), undefined);
+eq("NaN is rejected", parseThreshold("NaN"), undefined);
+
+// --- jev counters ---------------------------------------------------------
+// A cache hit is not a classification, so it must not move the counters, and the side
+// is decided by the threshold in force at the moment of the call.
+
+let counters = emptyJevCounters();
+counters = recordClassification(counters, { counted: true, verdict: "allow", confidence: 0.9, probabilities: undefined, threshold: 0.3 });
+counters = recordClassification(counters, { counted: true, verdict: "ask", confidence: 0.1, probabilities: undefined, threshold: 0.3 });
+counters = recordClassification(counters, { counted: false, verdict: "deny", confidence: 0.9, probabilities: undefined, threshold: 0.3 });
+eq("a cache hit is not counted", counters.total, 2);
+eq("a confident allow lands in allow high", counters.verdicts.allow, { high: 1, low: 0 });
+eq("a low-confidence ask lands in ask low", counters.verdicts.ask, { high: 0, low: 1 });
+eq("an untouched verdict stays at zero", counters.verdicts.deny, { high: 0, low: 0 });
+
+// The same verdict and confidence lands on different sides under a different threshold.
+const splitHigh = recordClassification(emptyJevCounters(), { counted: true, verdict: "deny", confidence: 0.5, probabilities: undefined, threshold: 0.3 });
+const splitLow = recordClassification(emptyJevCounters(), { counted: true, verdict: "deny", confidence: 0.5, probabilities: undefined, threshold: 0.9 });
+eq("a verdict above the threshold is high", splitHigh.verdicts.deny, { high: 1, low: 0 });
+eq("the same verdict below the threshold is low", splitLow.verdicts.deny, { high: 0, low: 1 });
+
+// The sides always add up to the total, which is what makes the line readable.
+const calls: Array<{ verdict: "allow" | "ask" | "deny"; confidence: number }> = [
+	{ verdict: "allow", confidence: 0.9 },
+	{ verdict: "allow", confidence: 0.1 },
+	{ verdict: "ask", confidence: 0.4 },
+	{ verdict: "deny", confidence: 0.2 },
+];
+let tallied = emptyJevCounters();
+for (const call of calls) {
+	tallied = recordClassification(tallied, { counted: true, verdict: call.verdict, confidence: call.confidence, probabilities: undefined, threshold: 0.3 });
+}
+eq("the total counts every classification", tallied.total, 4);
+eq(
+	"high plus low equals the total",
+	tallied.verdicts.allow.high +
+		tallied.verdicts.allow.low +
+		tallied.verdicts.ask.high +
+		tallied.verdicts.ask.low +
+		tallied.verdicts.deny.high +
+		tallied.verdicts.deny.low,
+	tallied.total,
+);
+eq(
+	"the counter line spells every bucket out",
+	formatJevCounters(tallied),
+	"counters: allow 1 high, 1 low · ask 1 high, 0 low · deny 0 high, 1 low",
+);
 
 // --- check reporting ------------------------------------------------------
 // The property that matters: a line for a command the pipeline does not classify must

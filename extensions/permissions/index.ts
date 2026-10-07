@@ -35,6 +35,8 @@ import {
 	describeCheckJev,
 	effectiveVerdict,
 	effectiveWorkingDirectories,
+	emptyJevCounters,
+	formatJevCounters,
 	FORWARDING_AGENT_DIR_ENV_KEY,
 	isMcpTool,
 	isShellTool,
@@ -44,7 +46,9 @@ import {
 	permissionIndicator,
 	parseJsonc,
 	parseForwardedResponse,
+	parseThreshold,
 	PLAN_BUILD_STATE_TYPE,
+	recordClassification,
 	resolveDeterministic,
 	resolveMode,
 	setBounded,
@@ -57,6 +61,7 @@ import {
 	isSubagentEnv,
 	type Decision,
 	type IntentSnapshot,
+	type JevCounters,
 	type Mode,
 	type PermissionsConfig,
 	type SwitchState,
@@ -86,6 +91,8 @@ interface State {
 	breaker: CircuitBreaker;
 	intent: IntentSnapshot;
 	pendingUsage: Map<string, UsageTotals>;
+	/** Classifier calls this session, by raw verdict and confidence side. */
+	counters: JevCounters;
 	/** Identical-call counters, which is what `special.doom_loop` covered before. */
 	dooms: Map<string, number>;
 	lastDecision: string;
@@ -234,6 +241,7 @@ function resetState(ctx: ExtensionContext, pi: ExtensionAPI): State {
 		breaker: new CircuitBreaker(loaded.config.failureThreshold),
 		intent: readIntent(ctx, loaded.config.maxIntentChars),
 		pendingUsage: new Map<string, UsageTotals>(),
+		counters: emptyJevCounters(),
 		dooms: new Map<string, number>(),
 		lastDecision: "none",
 		yoloNotified: false,
@@ -260,8 +268,15 @@ function syncStatus(ctx: ExtensionContext, current: State): void {
 			enabled: current.config.enabled,
 			jev: current.switches.jev,
 			yolo: current.switches.yolo,
+			threshold: current.config.jev.confidenceThreshold,
+			model: current.config.jev.model.id,
+			calls: current.counters.total,
 		});
-		ctx.ui.setStatus("permissions", indicator.warn ? ctx.ui.theme.fg("warning", indicator.text) : indicator.text);
+		// Only the two `on` words carry a colour; the line is never coloured as a whole.
+		const line = indicator.segments
+			.map((segment) => (segment.color === undefined ? segment.text : ctx.ui.theme.fg(segment.color, segment.text)))
+			.join(" · ");
+		ctx.ui.setStatus("permissions", line);
 	} catch {
 		// No UI in this mode.
 	}
@@ -513,7 +528,8 @@ async function gate(
 	// `decision.reason` records why this needed the classifier at all.
 	const judgement = decision.reason;
 	const key = cacheKey(JSON.stringify({ tool: event.toolName, command, targetPath }), current.intent);
-	let cached = current.cache.get(key);
+	const cachedBefore = current.cache.get(key);
+	let cached = cachedBefore;
 	let source = "cache";
 	if (cached === undefined) {
 		if (current.breaker.tripped) {
@@ -556,7 +572,17 @@ async function gate(
 	// A verdict below the threshold is not trusted: it becomes an ask, which YOLO then
 	// auto-approves. The audit keeps the raw verdict and the confidence so a threshold
 	// prompt is distinguishable from one Jev actually asked for.
+	// A cache hit is not a classification, so it does not move the counters; the threshold
+	// in force now decides the side, not whatever it is at the end of the session.
 	const threshold = current.config.jev.confidenceThreshold;
+	current.counters = recordClassification(current.counters, {
+		counted: cachedBefore === undefined,
+		verdict: cached.verdict,
+		confidence: cached.confidence,
+		probabilities: cached.probabilities,
+		threshold,
+	});
+	if (cachedBefore === undefined) syncStatus(ctx, current);
 	const { verdict, downgraded } = effectiveVerdict(cached.verdict, cached.confidence, cached.probabilities, threshold);
 	const action = decide(verdict, { hasUI: ctx.hasUI, yolo: false });
 	audit({
@@ -654,6 +680,9 @@ function statusLine(current: State): string {
 		`mode=${current.mode}`,
 		combination,
 		`(${effect})`,
+		`threshold=${current.config.jev.confidenceThreshold}`,
+		`model=${current.config.jev.model.provider}/${current.config.jev.model.id}`,
+		`calls=${current.counters.total}`,
 		`breaker=${current.breaker.tripped ? "open" : "closed"}`,
 		`config=${current.configStatus}`,
 		`last=${current.lastDecision}`,
@@ -713,6 +742,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				case "":
 				case "status": {
 					notify(ctx, statusLine(current), "info");
+					notify(ctx, formatJevCounters(current.counters), "info");
 					return;
 				}
 				case "jev":
@@ -730,6 +760,27 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				}
 				case "mode": {
 					notify(ctx, `permissions: mode=${current.mode} (read from pi-plan-build state)`, "info");
+					return;
+				}
+				case "threshold": {
+					// Session-scoped: the in-memory config changes and nothing is written, so
+					// `reload` restores the file's value.
+					if (rest === "") {
+						notify(ctx, `permissions: threshold=${current.config.jev.confidenceThreshold} (session)`, "info");
+						return;
+					}
+					const value = parseThreshold(rest);
+					if (value === undefined) {
+						notify(
+							ctx,
+							`permissions: '${rest}' is not a confidence threshold in 0..1; keeping ${current.config.jev.confidenceThreshold}`,
+							"warning",
+						);
+						return;
+					}
+					current.config = { ...current.config, jev: { ...current.config.jev, confidenceThreshold: value } };
+					syncStatus(ctx, current);
+					notify(ctx, `permissions: threshold=${value} for this session (not saved)`, "info");
 					return;
 				}
 				case "check": {
@@ -809,7 +860,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					return;
 				}
 				default: {
-					notify(ctx, "permissions: usage: /permissions [status|jev on|off|yolo on|off|mode|check <tool> <value>|reload]", "warning");
+					notify(
+						ctx,
+						"permissions: usage: /permissions [status|jev on|off|yolo on|off|threshold <0..1>|mode|check <tool> <value>|reload]",
+						"warning",
+					);
 				}
 			}
 		},

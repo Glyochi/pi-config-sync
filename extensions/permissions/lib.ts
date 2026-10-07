@@ -871,23 +871,46 @@ export function confirmMessage(
 
 // --- footer indicator -----------------------------------------------------
 
-export interface PermissionIndicator {
+/** One piece of the footer indicator, coloured on its own when it carries a colour. */
+export interface PermissionIndicatorSegment {
 	text: string;
-	/** True in the state with no floor, so the caller can colour the line. */
-	warn: boolean;
+	color?: "warning" | "error";
+}
+
+export interface PermissionIndicator {
+	/** The whole line, uncoloured, for callers that cannot colour segments. */
+	text: string;
+	/** The same line split into pieces, each with an optional colour. */
+	segments: PermissionIndicatorSegment[];
 }
 
 /**
- * The compact footer indicator: the two switches, or that the gate is off. A disabled
- * gate says so rather than showing switch values, which would describe a gate that is
- * not running.
+ * The compact footer indicator: the two switches, the threshold in force, the
+ * classifier, and the call count once anything has been classified. A disabled gate says
+ * so rather than showing switch values, which would describe a gate that is not running.
+ *
+ * Only `jev on` and `yolo on` carry a colour; the line is never coloured as a whole.
  */
-export function permissionIndicator(input: { enabled: boolean; jev: boolean; yolo: boolean }): PermissionIndicator {
-	if (!input.enabled) return { text: "permissions off", warn: false };
-	return {
-		text: `jev ${input.jev ? "on" : "off"} · yolo ${input.yolo ? "on" : "off"}`,
-		warn: input.yolo,
-	};
+export function permissionIndicator(input: {
+	enabled: boolean;
+	jev: boolean;
+	yolo: boolean;
+	threshold: number;
+	model: string;
+	calls: number;
+}): PermissionIndicator {
+	if (!input.enabled) {
+		const segments: PermissionIndicatorSegment[] = [{ text: "permissions off" }];
+		return { text: "permissions off", segments };
+	}
+	const segments: PermissionIndicatorSegment[] = [
+		input.jev ? { text: "jev on", color: "warning" } : { text: "jev off" },
+		input.yolo ? { text: "yolo on", color: "error" } : { text: "yolo off" },
+		{ text: `thr ${input.threshold.toFixed(2)}` },
+		{ text: input.model },
+	];
+	if (input.calls > 0) segments.push({ text: `${input.calls} reqs` });
+	return { text: segments.map((segment) => segment.text).join(" · "), segments };
 }
 
 // --- check reporting ------------------------------------------------------
@@ -1273,6 +1296,19 @@ export function verdictConfidence(
 	return typeof fallback === "number" && Number.isFinite(fallback) ? fallback : undefined;
 }
 
+/**
+ * Parse a `/permissions threshold` argument. Only a finite number in 0..1 is accepted;
+ * anything else returns `undefined`, so the caller can warn and keep the old value.
+ */
+export function parseThreshold(value: string): number | undefined {
+	const trimmed = value.trim();
+	if (trimmed === "") return undefined;
+	const parsed = Number(trimmed);
+	if (!Number.isFinite(parsed)) return undefined;
+	if (parsed < 0 || parsed > 1) return undefined;
+	return parsed;
+}
+
 /** Whether a verdict is below the trust threshold, so it becomes an ask. */
 export function isLowConfidence(
 	confidence: number | undefined,
@@ -1297,6 +1333,59 @@ export function effectiveVerdict(
 ): { verdict: Verdict; downgraded: boolean } {
 	const low = isLowConfidence(confidence, probabilities, verdict, threshold);
 	return { verdict: low ? "ask" : verdict, downgraded: low && verdict !== "ask" };
+}
+
+// --- Jev call counters ----------------------------------------------------
+
+/** Session counters for classifications: a total and a verdict × confidence table. */
+export interface JevCounters {
+	total: number;
+	/** Raw verdict crossed with the confidence side, in allow/ask/deny order. */
+	verdicts: Record<Verdict, { high: number; low: number }>;
+}
+
+export function emptyJevCounters(): JevCounters {
+	return {
+		total: 0,
+		verdicts: { allow: { high: 0, low: 0 }, ask: { high: 0, low: 0 }, deny: { high: 0, low: 0 } },
+	};
+}
+
+/**
+ * Count one classification. A cache hit is not a classification, so `counted: false`
+ * returns the counters unchanged — which is what keeps `high + low` equal to the total.
+ * The side comes from the threshold in force at that moment, so changing the threshold
+ * mid-session splits later verdicts differently.
+ */
+export function recordClassification(
+	counters: JevCounters,
+	input: {
+		counted: boolean;
+		verdict: Verdict;
+		confidence: number | undefined;
+		probabilities: Record<string, number> | undefined;
+		threshold: number;
+	},
+): JevCounters {
+	if (!input.counted) return counters;
+	const low = isLowConfidence(input.confidence, input.probabilities, input.verdict, input.threshold);
+	const verdicts: JevCounters["verdicts"] = {
+		allow: { ...counters.verdicts.allow },
+		ask: { ...counters.verdicts.ask },
+		deny: { ...counters.verdicts.deny },
+	};
+	const bucket = verdicts[input.verdict];
+	if (low) bucket.low += 1;
+	else bucket.high += 1;
+	return { total: counters.total + 1, verdicts };
+}
+
+/** The `/permissions status` counter line, in allow/ask/deny order. */
+export function formatJevCounters(counters: JevCounters): string {
+	const parts = VERDICTS.map(
+		(verdict) => `${verdict} ${counters.verdicts[verdict].high} high, ${counters.verdicts[verdict].low} low`,
+	);
+	return `counters: ${parts.join(" · ")}`;
 }
 
 /** A glob character in an unquoted target, so the target is not a specific path. */
