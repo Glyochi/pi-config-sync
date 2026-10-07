@@ -19,6 +19,7 @@ extension.
 | `tests/lib.test.ts` | The policy engine: config normalisation, mode resolution, the switch matrix, tool categories, the glob table, both matchers, the Jev payload, and the forwarding protocol |
 | `tests/hardblock.test.ts` | Which command shapes the credential matcher catches and which it must not |
 | `tests/e2e.sh` | End-to-end probes through real headless Pi sessions |
+| `tests/commands.py` | Drives the `/permissions` command surface over RPC mode, since print mode cannot run a slash command and the TUI is not scriptable |
 | `BEHAVIOR.md` | The quick lookup: the pipeline in order and a command table per switch and mode. Its tables are executed by `tests/lib.test.ts`, so they cannot drift from the engine. |
 
 ## The two switches
@@ -81,6 +82,16 @@ Two harness facts worth knowing:
 
 The switch matrix runs against temp configs through `PI_PERMISSIONS_CONFIG_PATH`; the
 real `permissions.jsonc` is never modified.
+
+The command surface has its own harness, because print mode cannot run a slash command:
+
+```bash
+python3 ~/.pi/agent/extensions/permissions/tests/commands.py
+```
+
+It starts `pi --mode rpc`, sends each `/permissions` subcommand as a prompt, and asserts
+on the notification the handler sends back — 15 cases covering `status`, `mode`, the
+switches, every `check` shape, and the usage line.
 
 ## What the engine decides
 

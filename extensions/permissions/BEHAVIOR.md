@@ -94,7 +94,9 @@ decided without it.
 
 - `/permissions status` — the mode, both switches, and the resulting behaviour.
 - `/permissions check <tool> <command-or-path>` — a faithful trace: it consults the
-  classifier only when the pipeline would, and prints one line per check.
+  classifier only when the pipeline would, and prints one line per check. Quote a
+  command that contains spaces (`check bash "rm -rf /srv/data"`); one pair of
+  surrounding quotes is stripped before the engine sees it.
 - `/permissions jev on|off`, `/permissions yolo on|off` — the switches.
 - `/permissions reload` — re-read `permissions.jsonc`.
 
