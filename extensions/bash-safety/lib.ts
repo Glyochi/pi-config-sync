@@ -29,6 +29,7 @@ export interface BashSafetyConfig {
 	cacheEntries: number;
 	failureThreshold: number;
 	usePermissionSystemYolo: boolean;
+	workingDirectories: string[];
 	hardBlock: { patterns: string[]; exemptions: string[] };
 	rules: BashSafetyRules;
 }
@@ -58,6 +59,9 @@ export const DEFAULT_HARD_BLOCK_PATTERNS: string[] = [
 
 export const DEFAULT_HARD_BLOCK_EXEMPTIONS: string[] = [".env.example", ".env.sample", ".env.template"];
 
+/** Where the task's files normally live; the session cwd is always added at runtime. */
+export const DEFAULT_WORKING_DIRECTORIES: string[] = ["/workspace", "/tmp"];
+
 export const DEFAULT_ENVIRONMENT = [
 	"The agent runs inside a disposable Docker container (linux-quick-setup image).",
 	"- uid 1000 (dev), CapEff=0, no docker socket: no privilege escalation, no container escape.",
@@ -65,8 +69,10 @@ export const DEFAULT_ENVIRONMENT = [
 	"- Persistent: /workspace (the host project directory, normally a git repo) plus the pi-auth,",
 	"  pi-sessions, and pi-state named volumes.",
 	"- Outbound network access is available.",
-	"- Local file deletion in the container is low risk (git-tracked or regenerable). Credential files",
-	"  are hard-blocked before this classifier runs, so they never reach it.",
+	"- The workingDirectories list is where the task's files live. Deleting inside those directories is",
+	"  low risk (git-tracked or regenerable). Deleting outside them can damage the container or the",
+	"  mounted project and counts as destructive. Credential files are hard-blocked before this",
+	"  classifier runs, so they never reach it.",
 ].join("\n");
 
 export const DEFAULT_INSTRUCTIONS =
@@ -75,9 +81,9 @@ export const DEFAULT_INSTRUCTIONS =
 
 export const DEFAULT_CRITERIA = {
 	allow: [
-		"Local, in-container work. Reads, builds, tests, installs, file creates/edits/deletes under the",
-		"working directory, local git (commit, branch, checkout, stash, reset, tag), running repo scripts,",
-		"formatting, linting, and local rm. Deleting local files is acceptable.",
+		"Local, in-container work. Reads, builds, tests, installs, file creates/edits/deletes inside the",
+		"working directories, local git (commit, branch, checkout, stash, reset, tag), running repo scripts,",
+		"formatting, linting, and local rm. Deleting files inside a working directory is acceptable.",
 	].join("\n"),
 	ask: [
 		"Effects outside the container that plausibly match the session intent but are ambiguous or",
@@ -85,13 +91,16 @@ export const DEFAULT_CRITERIA = {
 		"gh/aws/gcloud/az/kubectl/terraform commands, authenticated or uploading curl/wget, docker push,",
 		"npm/pip/cargo publish, triggering or editing CI/CD workflows, ssh/scp/rsync to a remote, and any",
 		"command that sends file contents off the machine. Also use ask when the intent does not justify",
-		"the command, or when the command cannot be confidently placed in allow or deny.",
+		"the command, when a delete target is not clearly inside or clearly outside a working directory,",
+		"or when the command cannot be confidently placed in allow or deny.",
 	].join("\n"),
 	deny: [
 		"Clear violations. Sending credential files, key material, or environment secrets to any remote;",
 		"destructive remote actions (force push, deleting cloud resources, buckets, or repositories,",
-		"revoking keys); disabling security controls; piping a remote script into a shell; writing outside",
-		"the working directory in a way the task does not cover.",
+		"revoking keys); destructive deletes of paths outside the working directories, such as rm -rf /,",
+		"rm -rf /*, rm -rf /usr, or rm -rf ~, and any recursive force delete aimed at the container root or",
+		"a system path; disabling security controls; piping a remote script into a shell; writing outside",
+		"the working directories in a way the task does not cover.",
 	].join("\n"),
 };
 
@@ -104,6 +113,7 @@ export const DEFAULT_CONFIG: BashSafetyConfig = {
 	cacheEntries: 100,
 	failureThreshold: 3,
 	usePermissionSystemYolo: true,
+	workingDirectories: DEFAULT_WORKING_DIRECTORIES,
 	hardBlock: { patterns: DEFAULT_HARD_BLOCK_PATTERNS, exemptions: DEFAULT_HARD_BLOCK_EXEMPTIONS },
 	rules: {
 		environment: DEFAULT_ENVIRONMENT,
@@ -237,6 +247,7 @@ export function normalizeConfig(raw: unknown): BashSafetyConfig {
 		cacheEntries: asNumber(raw.cacheEntries, DEFAULT_CONFIG.cacheEntries, 0),
 		failureThreshold: asNumber(raw.failureThreshold, DEFAULT_CONFIG.failureThreshold, 1),
 		usePermissionSystemYolo: asBoolean(raw.usePermissionSystemYolo, DEFAULT_CONFIG.usePermissionSystemYolo),
+		workingDirectories: asStringArray(raw.workingDirectories, DEFAULT_WORKING_DIRECTORIES),
 		hardBlock: {
 			patterns: asStringArray(hardBlock.patterns, DEFAULT_HARD_BLOCK_PATTERNS),
 			exemptions: asStringArray(hardBlock.exemptions, DEFAULT_HARD_BLOCK_EXEMPTIONS),
@@ -251,6 +262,25 @@ export function normalizeConfig(raw: unknown): BashSafetyConfig {
 			},
 		},
 	};
+}
+
+/**
+ * The working directories sent to the classifier: the configured list plus the session cwd,
+ * trimmed, de-duplicated, and with trailing slashes removed.
+ */
+export function effectiveWorkingDirectories(configured: string[], cwd: string): string[] {
+	const out: string[] = [];
+	const seen = new Set<string>();
+	for (const candidate of [...configured, cwd]) {
+		if (typeof candidate !== "string") continue;
+		const trimmed = candidate.trim();
+		if (trimmed === "") continue;
+		const normalized = trimmed.replace(/\/+$/, "") || "/";
+		if (seen.has(normalized)) continue;
+		seen.add(normalized);
+		out.push(normalized);
+	}
+	return out;
 }
 
 /** Cap text to `max` characters, marking the truncation. */

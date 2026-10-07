@@ -28,6 +28,7 @@ import {
 	CircuitBreaker,
 	confirmMessage,
 	decide,
+	effectiveWorkingDirectories,
 	hardBlockReason,
 	matchHardBlock,
 	normalizeConfig,
@@ -241,6 +242,7 @@ async function classify(command: string, ctx: ExtensionContext, state: GateState
 		const payload = {
 			command: capText(command, config.maxCommandChars),
 			cwd: ctx.cwd,
+			workingDirectories: effectiveWorkingDirectories(config.workingDirectories, ctx.cwd),
 			git: state.git,
 			session: state.intent,
 			environment: config.rules.environment,

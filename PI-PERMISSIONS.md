@@ -38,8 +38,9 @@ Pi runs inside the `linux-quick-setup` Docker container (see
   normally git-tracked) and the `pi-auth`, `pi-sessions`, `pi-state` volumes.
 
 So the classic reason for a guarded shell — protecting the host OS — does not
-apply, and neither does the delete question: untracked files in a disposable
-container are cheap, and a wrong `rm` costs less than a confirmation prompt.
+apply, and the delete question shrinks to *where*: files inside the working
+directories are cheap to lose, while a recursive delete aimed at `/`, `/usr`, or
+`~` can break the container or the mounted project.
 
 ### The remaining risk is semantic, not lexical
 
@@ -82,6 +83,28 @@ leaked key" — a leaked key stays valid until revoked.
 
 The pattern list is also a built-in default, so a missing or unparsable
 `bash-safety.jsonc` still blocks credentials.
+
+## Delete guidance: working directories
+
+`bash-safety.jsonc` has a `workingDirectories` list (default `/workspace` and
+`/tmp`), and the session `cwd` is always added to it at runtime. The resolved
+list reaches Jev as part of the state, and the criteria spell out the
+consequence:
+
+- A delete inside a working directory is `allow` — the normal case for the
+  task's own files.
+- A destructive delete outside them is `deny`, naming `rm -rf /`, `rm -rf /*`,
+  `rm -rf /usr`, and `rm -rf ~`, plus any recursive force delete aimed at the
+  container root or a system path.
+- A delete target that is neither clearly inside nor clearly outside is `ask`.
+
+This is prompt-level guidance, not a hard block. A `deny` verdict still prompts
+rather than blocking whenever a UI exists, and Jev can still be wrong. The reason
+it is guidance rather than a matcher is that "outside the working directories"
+cannot be decided by string matching — `/workspace/../..` and
+`$(git rev-parse --show-toplevel)` both defeat it, and a false hard block on a
+legitimate `rm` costs more than a prompt. The only deterministic delete-adjacent
+rule remains the credential hard block.
 
 ## Why the file-tool credential asks stay
 
@@ -148,6 +171,8 @@ is implemented. YOLO is the supported way to let delegated work run.
 - The classifier is a network call: one round trip per bash command (identical
   commands are served from a bounded per-session cache). At `jev-1.13` pricing
   this is about $0.042 per 1M input tokens.
+- Delete guidance is a prompt, not a matcher: an out-of-bounds delete relies on
+  the classifier noticing it, and a `deny` verdict only prompts in the TUI.
 - The `powershell` tool is not gated by `bash-safety`.
 - The file-tool credential rules cover `read`/`write`/`edit`/`grep`; `find`/`ls`
   metadata on credential paths is not gated.
@@ -156,9 +181,9 @@ is implemented. YOLO is the supported way to let delegated work run.
 
 ## How to change the policy
 
-1. Bash behaviour and rules: edit `~/.pi/agent/bash-safety.jsonc`, then run
-   `/bash-safety reload`. Inspect with `/bash-safety status` and dry-run a command
-   with `/bash-safety check <command>`.
+1. Bash behaviour and rules: edit `~/.pi/agent/bash-safety.jsonc` (including
+   `workingDirectories`), then run `/bash-safety reload`. Inspect with
+   `/bash-safety status` and dry-run a command with `/bash-safety check <command>`.
 2. File-tool, MCP, skill, and special behaviour: edit
    `~/.pi/agent/pi-permissions.jsonc`, then `/reload` (or restart Pi).
 3. Validate: the file must parse as JSONC.

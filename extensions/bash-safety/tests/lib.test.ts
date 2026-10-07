@@ -14,7 +14,10 @@ import {
 	CircuitBreaker,
 	confirmMessage,
 	DEFAULT_CONFIG,
+	DEFAULT_CRITERIA,
+	DEFAULT_WORKING_DIRECTORIES,
 	decide,
+	effectiveWorkingDirectories,
 	hashText,
 	hardBlockReason,
 	intentHash,
@@ -81,6 +84,22 @@ eq("negative numeric falls back", normalizeConfig({ cacheEntries: -5 }).cacheEnt
 eq("explicit empty pattern list is respected", normalizeConfig({ hardBlock: { patterns: [] } }).hardBlock.patterns, []);
 eq("rules override merges per field", normalizeConfig({ rules: { criteria: { allow: "mine" } } }).rules.criteria.ask, DEFAULT_CONFIG.rules.criteria.ask);
 eq("non-string array rejected", normalizeConfig({ hardBlock: { patterns: [1, 2] } }).hardBlock.patterns, DEFAULT_CONFIG.hardBlock.patterns);
+eq("working directories default", normalizeConfig({}).workingDirectories, DEFAULT_WORKING_DIRECTORIES);
+eq("working directories override", normalizeConfig({ workingDirectories: ["/srv"] }).workingDirectories, ["/srv"]);
+eq("bad working directories rejected", normalizeConfig({ workingDirectories: "nope" }).workingDirectories, DEFAULT_WORKING_DIRECTORIES);
+
+// --- working directories -------------------------------------------------
+
+eq("cwd already listed is not duplicated", effectiveWorkingDirectories(["/workspace", "/tmp"], "/workspace"), ["/workspace", "/tmp"]);
+eq("cwd is appended", effectiveWorkingDirectories(["/workspace"], "/srv/app"), ["/workspace", "/srv/app"]);
+eq("trailing slashes are stripped", effectiveWorkingDirectories(["/a/"], "/b/"), ["/a", "/b"]);
+eq("duplicates collapse", effectiveWorkingDirectories(["/a", "/a"], "/a"), ["/a"]);
+eq("root is preserved", effectiveWorkingDirectories(["/"], "/"), ["/"]);
+eq("blank entries are dropped", effectiveWorkingDirectories(["", "  "], "/a"), ["/a"]);
+eq("empty config still adds cwd", effectiveWorkingDirectories([], "/workspace"), ["/workspace"]);
+check("allow criteria names working directories", DEFAULT_CRITERIA.allow.includes("working directories"));
+check("deny criteria names outside-working-directory deletes", DEFAULT_CRITERIA.deny.includes("outside the working directories"));
+check("deny criteria names the root wipe", DEFAULT_CRITERIA.deny.includes("rm -rf /*") && DEFAULT_CRITERIA.deny.includes("rm -rf /usr"));
 
 // --- hard block ----------------------------------------------------------
 
