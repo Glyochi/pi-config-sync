@@ -857,6 +857,56 @@ export function confirmMessage(
 	return body.join("\n\n");
 }
 
+// --- check reporting ------------------------------------------------------
+// `/permissions check` reads as a faithful trace of the pipeline. It never consults the
+// classifier for a command the pipeline would not, and it never presents an opinion as
+// a decision, so one line always says what would actually happen.
+
+/** The line for everything the deterministic layer settles by itself. */
+export function describeCheckDecision(input: {
+	toolName: string;
+	decision: Decision;
+	gateEnabled: boolean;
+	yolo: boolean;
+}): string {
+	const prefix = `permissions: ${input.toolName} ->`;
+	// Reasons carry their own `permissions:` prefix for the tool-result path; strip it so
+	// a check line never reads `permissions: … -> block — permissions: …`.
+	const strip = (reason: string): string => reason.replace(/^permissions:\s*/, "");
+	if (!input.gateEnabled) return `${prefix} allow — the gate is disabled`;
+	if (input.yolo) return `${prefix} allow — YOLO is on, so nothing is gated, hard blocks included`;
+	const { decision } = input;
+	if (decision.kind === "block") return `${prefix} block — ${strip(decision.reason)}`;
+	if (decision.kind === "ask") return `${prefix} ask — ${strip(decision.reason)}`;
+	if (decision.kind === "classify") return `${prefix} classify — Jev decides this one`;
+	return `${prefix} allow — the deterministic rules decided it, so Jev is not consulted`;
+}
+
+/** The line when the pipeline does consult the classifier. */
+export function describeCheckJev(input: {
+	toolName: string;
+	verdict: Verdict;
+	confidence: number | undefined;
+	probabilities: Record<string, number> | undefined;
+	hasUI: boolean;
+}): string {
+	const action = decide(input.verdict, { hasUI: input.hasUI, yolo: false });
+	const what =
+		action.kind === "run"
+			? "it would run"
+			: action.kind === "confirm"
+				? "it would prompt for approval"
+				: "it would be blocked, since there is no UI";
+	const confidence = input.confidence === undefined ? "n/a" : input.confidence.toFixed(2);
+	const distribution = formatDistribution(input.probabilities);
+	return `permissions: ${input.toolName} -> ${input.verdict} (Jev, confidence ${confidence})${distribution === "" ? "" : `  [${distribution}]`} — ${what}`;
+}
+
+/** The line when the classifier could not answer, so the gate fails open. */
+export function describeCheckFailure(toolName: string, error: string | undefined): string {
+	return `permissions: ${toolName} -> allow — Jev is unavailable (${error ?? "unknown error"}), so the gate fails open`;
+}
+
 /** Collect and cap the session intent sent to the classifier. */
 export function snapshotIntent(
 	input: { sessionName?: string | undefined; originalTask?: string | undefined; latestUserMessage?: string | undefined },

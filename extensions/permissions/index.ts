@@ -30,8 +30,10 @@ import {
 	CircuitBreaker,
 	confirmMessage,
 	decide,
+	describeCheckDecision,
+	describeCheckFailure,
+	describeCheckJev,
 	FORWARDING_AGENT_DIR_ENV_KEY,
-	formatDistribution,
 	isMcpTool,
 	isShellTool,
 	modeFromEntries,
@@ -711,16 +713,21 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						command,
 						targetPath,
 					});
-					notify(
-						ctx,
-						`permissions: ${toolName} -> ${decision.kind}${"reason" in decision ? ` — ${decision.reason}` : ""}`,
-						decision.kind === "allow" ? "info" : "warning",
-					);
-
-					// A check is a diagnostic, so it always asks the classifier even when the
-					// deterministic layer already decided. That is the only way to see what the
-					// model thinks of a command the globs allow.
-					if (toolCategory(toolName) !== "effectful") return;
+					// A check is a faithful trace: it consults the classifier only when the pipeline
+					// would, so one line always says what would actually happen.
+					if (decision.kind !== "classify") {
+						notify(
+							ctx,
+							describeCheckDecision({
+								toolName,
+								decision,
+								gateEnabled: current.config.enabled,
+								yolo: current.switches.yolo,
+							}),
+							decision.kind === "allow" ? "info" : "warning",
+						);
+						return;
+					}
 					const outcome = await classify(
 						buildJevPayload({
 							toolName,
@@ -737,18 +744,18 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						current,
 					);
 					if (outcome.kind === "failure") {
-						notify(ctx, `permissions: Jev unavailable (${outcome.error})`, "warning");
+						notify(ctx, describeCheckFailure(toolName, outcome.error), "warning");
 						return;
 					}
-					const distribution = formatDistribution(outcome.probabilities);
-					const confidence = outcome.confidence === undefined ? "n/a" : outcome.confidence.toFixed(2);
-					const consulted =
-						decision.kind === "classify" && current.switches.jev
-							? "this is what would decide"
-							: `not consulted as configured (${decision.kind} came from the deterministic layer)`;
 					notify(
 						ctx,
-						`permissions: Jev says ${outcome.verdict} (confidence ${confidence})${distribution === "" ? "" : `  [${distribution}]`} — ${consulted}`,
+						describeCheckJev({
+							toolName,
+							verdict: outcome.verdict,
+							confidence: outcome.confidence,
+							probabilities: outcome.probabilities,
+							hasUI: ctx.hasUI,
+						}),
 						outcome.verdict === "allow" ? "info" : "warning",
 					);
 					return;

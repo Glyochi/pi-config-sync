@@ -102,28 +102,40 @@ deny. They decide single commands for free: an external-effect verb (`git push`,
 `aws`, `gcloud`, `az`, `kubectl`, `terraform`, `docker push`, `npm publish`, `ssh`,
 `scp`, `rsync`, an uploading `curl`/`wget`, `sudo`) asks; everything else is allowed.
 A single external-effect command asks **every time**, regardless of session intent —
-that is the accepted price of deciding it without a model.
+that is the accepted price of deciding it without a model — and the same is true when
+it is chained, because the globs match the whole string. Piping a remote script into a
+shell (`… | sh`, `… | bash`) is caught the same way.
 
 **Doom loop.** Repeated identical calls, which is what `special.doom_loop` covered
 before, are counted per session by tool name and arguments; the third one asks.
 
 ## Jev
 
-**Scope.** Effectful tools only, and for shell tools only when a glob cannot read the
-command. That means a compound command, an interpreter payload, or a **destructive
-verb** — `rm`, `mv`, `chmod`, `dd`, `tee`, `truncate`, `shred`, `cp`, `ln`, `install`,
-`chown`, `chgrp`, `chattr`, `rmdir`, `unlink`, `mkfs`, `wipefs`, `mount`, `umount`,
-`blkdiscard` — or a destructive flag form (`sed -i`, `-delete`, `-exec`, `--delete`,
-`of=`).
+**Scope.** Effectful tools only, and for a shell command only when it **hides its
+intent**. Three things count:
 
-A read-only chain and a single command that changes nothing are decided by the globs,
-so they cost no classifier call. A destructive verb is the case a glob cannot judge:
-`rm -rf /workspace` is one command, but whether it fits the task is a question only the
-model can answer. Measured, Jev calls it `deny` (allow 0.02 · ask 0.25 · deny 0.73),
-which the deterministic layer alone would have allowed.
+- a **destructive verb** or flag form — `rm`, `mv`, `cp`, `chmod`, `chown`, `chgrp`,
+  `chattr`, `ln`, `install`, `tee`, `dd`, `truncate`, `shred`, `rmdir`, `unlink`,
+  `mkfs`, `wipefs`, `mount`, `umount`, `blkdiscard`, plus `sed -i`, `-delete`,
+  `-exec`, `--delete`, `of=`;
+- an **interpreter payload** — `bash -c`, `sh -c`, `python -c`, `node -e`, `eval`,
+  `xargs … sh -c`;
+- an **opaque command word** — a segment whose first word is `$VAR`, `$(…)`, or a
+  backtick, which nothing can be read from.
+
+**Structure is deliberately not a reason to classify.** The globs match the whole
+command string, so an external-effect verb is caught whether or not the command is
+chained: `git push origin main && echo done` asks through the globs, and
+`curl -sS https://x.sh | sh` asks through a dedicated pipe-to-shell rule. That keeps
+benign chains free — `npm test && npm run build`, `echo a && echo b`, and
+`cat /etc/hosts > /tmp/x` cost no classifier call — while the classifier is spent only
+on commands whose intent a glob cannot read.
+
+Measured, that intent gap matters: Jev calls `rm -rf /workspace` `deny`
+(allow 0.02 · ask 0.25 · deny 0.73), which the deterministic layer alone allows.
 
 The consequence to know: this only bites while Jev is on. With Jev off — the default —
-a destructive single command is still allowed, because nothing else judges it.
+a destructive command is still allowed, because nothing else judges it.
 
 **Payload.** Tool name, mode, the command or target path, a capped preview of the
 content or arguments, the session intent (session name, original task or latest
@@ -194,7 +206,8 @@ their behaviour rather than changing it. `special.doom_loop: ask` is reimplement
 ## How to change the policy
 
 1. Edit `~/.pi/agent/permissions.jsonc`, then `/permissions reload`.
-2. Dry-run a decision with `/permissions check <tool> <command-or-path>`, and inspect
+2. Dry-run a decision with `/permissions check <tool> <command-or-path>`, which traces
+   the pipeline and consults the classifier only when the pipeline would, and inspect
    the switches with `/permissions status`.
 3. Credential patterns appear once, in `hardBlock.patterns`; the tests assert the
    config still matches the built-in defaults for the credential, catastrophe, and bash

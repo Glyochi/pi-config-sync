@@ -30,6 +30,9 @@ import {
 	DEFAULT_DESTRUCTIVE_COMMANDS,
 	DEFAULT_DESTRUCTIVE_FORMS,
 	DEFAULT_HARD_BLOCK_PATTERNS,
+	describeCheckDecision,
+	describeCheckFailure,
+	describeCheckJev,
 	hasDestructiveIntent,
 	forwardingPaths,
 	hasInterpreterPayload,
@@ -430,6 +433,70 @@ eq("command word strips a path prefix", commandWordOf("/usr/bin/chmod 777 /tmp")
 eq("plain command word", commandWordOf("ls -la"), "ls");
 // Documented limitation: a wrapper's value-taking flag hides the real command.
 eq("wrapper flag hides the command", commandWordOf("sudo -u root chmod 000 /etc/passwd"), "root");
+
+// --- check reporting ------------------------------------------------------
+// The property that matters: a line for a command the pipeline does not classify must
+// never read as a Jev verdict.
+
+const allowLine = describeCheckDecision({ toolName: "bash", decision: { kind: "allow" }, gateEnabled: true, yolo: false });
+check("an allow line says the deterministic rules decided", allowLine.includes("the deterministic rules decided it"));
+check("an allow line says Jev is not consulted", allowLine.includes("Jev is not consulted"));
+check("an allow line is not a Jev verdict", !allowLine.includes("Jev says") && !allowLine.includes("confidence"));
+check("an allow line carries no distribution", !allowLine.includes("["));
+
+check(
+	"a disabled gate says so",
+	describeCheckDecision({ toolName: "bash", decision: { kind: "allow" }, gateEnabled: false, yolo: false }).includes("the gate is disabled"),
+);
+check(
+	"yolo says nothing is gated",
+	describeCheckDecision({ toolName: "bash", decision: { kind: "allow" }, gateEnabled: true, yolo: true }).includes("nothing is gated"),
+);
+check(
+	"a block line carries its reason",
+	describeCheckDecision({ toolName: "bash", decision: { kind: "block", reason: "because" }, gateEnabled: true, yolo: false }).includes("block — because"),
+);
+check(
+	"an embedded reason does not repeat the prefix",
+	!describeCheckDecision({ toolName: "bash", decision: { kind: "block", reason: "permissions: because" }, gateEnabled: true, yolo: false }).includes("permissions: permissions:"),
+);
+check(
+	"an embedded reason keeps its text",
+	describeCheckDecision({ toolName: "bash", decision: { kind: "ask", reason: "permissions: maybe" }, gateEnabled: true, yolo: false }).includes("ask — maybe"),
+);
+check(
+	"an ask line carries its reason",
+	describeCheckDecision({ toolName: "bash", decision: { kind: "ask", reason: "maybe" }, gateEnabled: true, yolo: false }).includes("ask — maybe"),
+);
+check(
+	"a classify line names the decider",
+	describeCheckDecision({ toolName: "bash", decision: { kind: "classify", reason: "destructive" }, gateEnabled: true, yolo: false }).includes("Jev decides this one"),
+);
+
+check(
+	"an allow verdict would run",
+	describeCheckJev({ toolName: "bash", verdict: "allow", confidence: 0.9, probabilities: { allow: 0.9, ask: 0.05, deny: 0.05 }, hasUI: true }).includes("it would run"),
+);
+check(
+	"a deny verdict would prompt when a UI exists",
+	describeCheckJev({ toolName: "bash", verdict: "deny", confidence: 0.8, probabilities: { allow: 0.05, ask: 0.15, deny: 0.8 }, hasUI: true }).includes("it would prompt for approval"),
+);
+check(
+	"a deny verdict would block with no UI",
+	describeCheckJev({ toolName: "bash", verdict: "deny", confidence: 0.8, probabilities: { allow: 0.05, ask: 0.15, deny: 0.8 }, hasUI: false }).includes("blocked, since there is no UI"),
+);
+check(
+	"a Jev line carries the distribution",
+	describeCheckJev({ toolName: "bash", verdict: "deny", confidence: 0.8, probabilities: { allow: 0.05, ask: 0.15, deny: 0.8 }, hasUI: true }).includes("allow 0.05 · ask 0.15 · deny 0.80"),
+);
+check(
+	"a missing confidence is labelled",
+	describeCheckJev({ toolName: "bash", verdict: "allow", confidence: undefined, probabilities: undefined, hasUI: true }).includes("confidence n/a"),
+);
+check(
+	"a failure line fails open",
+	describeCheckFailure("bash", "boom").includes("fails open") && describeCheckFailure("bash", "boom").includes("boom"),
+);
 
 // --- policy file self-consistency -----------------------------------------
 // Credential rules appear twice by necessity: as hard-block patterns, which run

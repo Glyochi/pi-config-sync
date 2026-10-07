@@ -57,7 +57,8 @@ PROBE_TIMEOUT=600 PI_E2E_MODEL=opencode/deepseek-v4.1-flash \
 |---|---|
 | `simple-not-classified` | `echo probe-ok` runs and its result carries **no** usage, so it was never classified |
 | `compound-jevv-off` | `echo a && echo b` runs with no usage |
-| `compound-jevv-on` | the same command, with Jev switched on, runs **with** usage |
+| `benign-chain-jevv-on` | the same command with Jev on still runs with **no** usage — structure is not a reason to classify |
+| `chained-external-effect` | `git push origin main && echo done` asks through the globs, with no classifier call |
 | `destructive-jevv-on` | `rm -rf /tmp/permissions-probe` reaches the classifier: either it ran and carries usage, or it was blocked with a Jev reason |
 | `destructive-jevv-off` | the same command with Jev off is neither classified nor blocked |
 | `hard-block` | `echo token` returns the credential-gate reason |
@@ -90,9 +91,11 @@ Reads (`read`, `grep`, `find`, `ls`) are deterministic only. Effectful tools (`b
   command-position aware, and redirection targets are parsed.
 - **Declarative bash globs**: whole-string, last-match-wins. A single command is decided
   here for free, so `git push` asks and `ls` does not.
-- **Jev**: for effectful non-shell tools, and for shell commands a glob cannot judge —
-  compound commands, interpreter payloads, and destructive verbs like `rm`, `mv`,
-  `chmod`, or `dd`. A read-only chain and a benign single command stay free.
+- **Jev**: for effectful non-shell tools, and for a shell command only when it hides
+  its intent — a destructive verb or flag form, an interpreter payload, or an opaque
+  command word like `$VAR`. Structure is not a reason: the globs match the whole
+  string, so a chained external-effect command is decided without the classifier, and
+  benign chains stay free.
 - **Doom loop**: the third identical call in a session asks.
 
 Approvals are one-shot — `Allow once` or `Reject`, nothing stored. YOLO is the answer for
@@ -111,13 +114,17 @@ decision, source, reason), which is denylisted from pi-config-sync.
   the switch.
 - Switch to Plan mode in the TUI: a shell mutation is refused while `ls` and
   `git status` still work, and effectful MCP tools disappear from the tool list.
-- `/permissions check bash "git push origin main"` reports `ask`;
-  `/permissions check read ~/.git-credentials` reports `ask`.
+- `/permissions check bash "git push origin main"` reports `ask`; `/permissions check
+  read ~/.git-credentials` reports `ask`; `/permissions check bash "ls -la"` reports
+  `allow — the deterministic rules decided it, so Jev is not consulted`.
 - A subagent that hits an `ask` shows the prompt in this session rather than failing
   closed.
 
 ## Changing the policy
 
 Edit `~/.pi/agent/permissions.jsonc`, then `/permissions reload`. Dry-run with
-`/permissions check <tool> <command-or-path>`. Re-run both deterministic suites, and
+`/permissions check <tool> <command-or-path>`, which is a faithful trace: it consults
+the classifier only when the pipeline would, so every line reads
+`permissions: <tool> -> <outcome> — <explanation>` and never presents an opinion as a
+decision. Re-run both deterministic suites, and
 update the tables in `PI-PERMISSIONS.md` if behaviour shifts.
