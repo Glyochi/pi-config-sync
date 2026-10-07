@@ -3,5 +3,9 @@
   // pi-permissions.jsonc holds the global pi-permission-system policy.
   // PI-PERMISSIONS.md documents why that policy is shaped the way it is.
   // keybindings.json holds the user keybinding overrides.
-  "extraPaths": ["pi-permissions.jsonc", "PI-PERMISSIONS.md", "keybindings.json"]
+  // pi-plan-build.json holds Plan/Build settings; questionTool is false so the
+  // pi-plan-build question dialog never competes with the rpiv ask_user_question
+  // tool, the only question tool this setup wants.
+  // PI-QUESTION-TOOLS.md documents why that is the only question tool.
+  "extraPaths": ["pi-permissions.jsonc", "PI-PERMISSIONS.md", "keybindings.json", "pi-plan-build.json", "PI-QUESTION-TOOLS.md"]
 }

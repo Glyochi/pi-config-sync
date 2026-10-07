@@ -40,6 +40,12 @@
 !keybindings.json
 !keybindings.json/
 !keybindings.json/**
+!pi-plan-build.json
+!pi-plan-build.json/
+!pi-plan-build.json/**
+!PI-QUESTION-TOOLS.md
+!PI-QUESTION-TOOLS.md/
+!PI-QUESTION-TOOLS.md/**
 # hard denylist — re-ignored even inside allowed dirs
 **/logs/
 auth*
