@@ -1,12 +1,11 @@
 {
   // Extra paths to sync, on top of the built-in allowlist.
-  // pi-permissions.jsonc holds the global pi-permission-system policy.
+  // permissions.jsonc holds the global policy for the permissions extension.
   // PI-PERMISSIONS.md documents why that policy is shaped the way it is.
   // keybindings.json holds the user keybinding overrides.
   // pi-plan-build.json holds Plan/Build settings; questionTool is false so the
   // pi-plan-build question dialog never competes with the rpiv ask_user_question
   // tool, the only question tool this setup wants.
   // PI-QUESTION-TOOLS.md documents why that is the only question tool.
-  // bash-safety.jsonc holds the Jev bash-gate rules, model, and knobs.
-  "extraPaths": ["pi-permissions.jsonc", "PI-PERMISSIONS.md", "keybindings.json", "pi-plan-build.json", "PI-QUESTION-TOOLS.md", "bash-safety.jsonc"]
+  "extraPaths": ["permissions.jsonc", "PI-PERMISSIONS.md", "keybindings.json", "pi-plan-build.json", "PI-QUESTION-TOOLS.md"]
 }

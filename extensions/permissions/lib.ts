@@ -14,25 +14,45 @@ export type Action =
 	| { kind: "confirm"; severity: "unsure" | "disapprove"; title: string }
 	| { kind: "block"; reason: string };
 
-export interface BashSafetyRules {
+export interface PermissionsRules {
 	environment: string;
 	instructions: string;
 	criteria: { allow: string; ask: string; deny: string };
 }
 
-export interface BashSafetyConfig {
+export type Mode = "plan" | "build";
+export type RuleState = "allow" | "ask" | "deny";
+
+/** The custom session entry pi-plan-build writes on every mode change. */
+export const PLAN_BUILD_STATE_TYPE = "pi-plan-build-state";
+
+/** Directories that stay writable in Plan mode, because plan Markdown lives there. */
+export const PLAN_ARTIFACT_DIR = "plans";
+
+export interface PermissionsConfig {
 	enabled: boolean;
-	model: { provider: string; id: string };
-	timeoutMs: number;
+	/** The semantic layer. Off means no classifier calls at all. */
+	jev: { enabled: boolean; model: { provider: string; id: string }; timeoutMs: number };
+	/** Auto-approves every ask AND disables the credential and catastrophe hard blocks. */
+	yolo: boolean;
+	/** What each mode does to a mutation (write, edit, shell mutation, effectful MCP). */
+	modes: { plan: { mutations: RuleState }; build: { mutations: RuleState } };
+	/** Path patterns that never reach a shell command. Deny, never a prompt. */
+	hardBlock: { patterns: string[]; exemptions: string[] };
+	/** How a path-bearing file tool treats a credential pattern. */
+	fileTools: { credential: RuleState };
+	/** Directories whose modification is refused outright. */
+	catastrophe: { paths: string[]; commands: string[]; forms: string[] };
+	workingDirectories: string[];
+	/** Declarative bash globs, matched whole-string with last-match-wins. */
+	bash: Record<string, RuleState>;
+	audit: { enabled: boolean };
 	maxCommandChars: number;
 	maxIntentChars: number;
+	maxPreviewChars: number;
 	cacheEntries: number;
 	failureThreshold: number;
-	usePermissionSystemYolo: boolean;
-	workingDirectories: string[];
-	hardBlock: { patterns: string[]; exemptions: string[] };
-	catastrophe: { paths: string[]; commands: string[]; forms: string[] };
-	rules: BashSafetyRules;
+	rules: PermissionsRules;
 }
 
 export interface IntentSnapshot {
@@ -162,22 +182,72 @@ export const DEFAULT_CRITERIA = {
 	].join("\n"),
 };
 
-export const DEFAULT_CONFIG: BashSafetyConfig = {
+/**
+ * Declarative bash rules. Whole-string globs, last-match-wins, so the order is
+ * broad allow, then asks, then denies. A single command is decided here with no
+ * classifier call.
+ */
+export const DEFAULT_BASH_RULES: Record<string, RuleState> = {
+	"*": "allow",
+
+	"git push*": "ask",
+	"* git push*": "ask",
+	"gh *": "ask",
+	"* gh *": "ask",
+	"aws *": "ask",
+	"* aws *": "ask",
+	"gcloud *": "ask",
+	"* gcloud *": "ask",
+	"az *": "ask",
+	"* az *": "ask",
+	"kubectl *": "ask",
+	"* kubectl *": "ask",
+	"terraform *": "ask",
+	"* terraform *": "ask",
+	"docker push*": "ask",
+	"* docker push*": "ask",
+	"npm publish*": "ask",
+	"* npm publish*": "ask",
+	"ssh *": "ask",
+	"* ssh *": "ask",
+	"scp *": "ask",
+	"* scp *": "ask",
+	"rsync *": "ask",
+	"* rsync *": "ask",
+	"*curl*-d *": "ask",
+	"*curl*--data*": "ask",
+	"*curl*-T *": "ask",
+	"*curl*--upload-file*": "ask",
+	"*wget*--post-data*": "ask",
+	"*wget*--post-file*": "ask",
+	"sudo *": "ask",
+	"* sudo *": "ask",
+};
+
+export const DEFAULT_CONFIG: PermissionsConfig = {
 	enabled: true,
-	model: { provider: "opencode", id: "jev-1.13" },
-	timeoutMs: 10_000,
+	jev: {
+		enabled: false,
+		model: { provider: "opencode", id: "jev-1.13" },
+		timeoutMs: 10_000,
+	},
+	yolo: false,
+	modes: { plan: { mutations: "deny" }, build: { mutations: "allow" } },
 	maxCommandChars: 4_000,
 	maxIntentChars: 1_500,
+	maxPreviewChars: 600,
 	cacheEntries: 100,
 	failureThreshold: 3,
-	usePermissionSystemYolo: true,
 	workingDirectories: DEFAULT_WORKING_DIRECTORIES,
 	hardBlock: { patterns: DEFAULT_HARD_BLOCK_PATTERNS, exemptions: DEFAULT_HARD_BLOCK_EXEMPTIONS },
+	fileTools: { credential: "ask" },
 	catastrophe: {
 		paths: DEFAULT_CATASTROPHE_PATHS,
 		commands: DEFAULT_CATASTROPHE_COMMANDS,
 		forms: DEFAULT_CATASTROPHE_FORMS,
 	},
+	bash: DEFAULT_BASH_RULES,
+	audit: { enabled: true },
 	rules: {
 		environment: DEFAULT_ENVIRONMENT,
 		instructions: DEFAULT_INSTRUCTIONS,
@@ -292,30 +362,47 @@ export function parseJsonc(input: string): unknown {
 }
 
 /** Merge a parsed config over the built-in defaults, ignoring malformed fields. */
-export function normalizeConfig(raw: unknown): BashSafetyConfig {
+export function normalizeConfig(raw: unknown): PermissionsConfig {
 	if (!isRecord(raw)) return { ...DEFAULT_CONFIG, rules: { ...DEFAULT_CONFIG.rules, criteria: { ...DEFAULT_CRITERIA } } };
-	const model = isRecord(raw.model) ? raw.model : {};
+	const jev = isRecord(raw.jev) ? raw.jev : {};
+	const jevModel = isRecord(jev.model) ? jev.model : {};
+	const modes = isRecord(raw.modes) ? raw.modes : {};
+	const planMode = isRecord(modes.plan) ? modes.plan : {};
+	const buildMode = isRecord(modes.build) ? modes.build : {};
 	const hardBlock = isRecord(raw.hardBlock) ? raw.hardBlock : {};
+	const fileTools = isRecord(raw.fileTools) ? raw.fileTools : {};
+	const audit = isRecord(raw.audit) ? raw.audit : {};
 	const catastrophe = isRecord(raw.catastrophe) ? raw.catastrophe : {};
 	const rules = isRecord(raw.rules) ? raw.rules : {};
 	const criteria = isRecord(rules.criteria) ? rules.criteria : {};
 	return {
 		enabled: asBoolean(raw.enabled, DEFAULT_CONFIG.enabled),
-		model: {
-			provider: asString(model.provider, DEFAULT_CONFIG.model.provider),
-			id: asString(model.id, DEFAULT_CONFIG.model.id),
+		jev: {
+			enabled: asBoolean(jev.enabled, DEFAULT_CONFIG.jev.enabled),
+			model: {
+				provider: asString(jevModel.provider, DEFAULT_CONFIG.jev.model.provider),
+				id: asString(jevModel.id, DEFAULT_CONFIG.jev.model.id),
+			},
+			timeoutMs: asNumber(jev.timeoutMs, DEFAULT_CONFIG.jev.timeoutMs, 1),
 		},
-		timeoutMs: asNumber(raw.timeoutMs, DEFAULT_CONFIG.timeoutMs, 1),
+		yolo: asBoolean(raw.yolo, DEFAULT_CONFIG.yolo),
+		modes: {
+			plan: { mutations: asRuleState(planMode.mutations, DEFAULT_CONFIG.modes.plan.mutations) },
+			build: { mutations: asRuleState(buildMode.mutations, DEFAULT_CONFIG.modes.build.mutations) },
+		},
 		maxCommandChars: asNumber(raw.maxCommandChars, DEFAULT_CONFIG.maxCommandChars, 1),
 		maxIntentChars: asNumber(raw.maxIntentChars, DEFAULT_CONFIG.maxIntentChars, 1),
+		maxPreviewChars: asNumber(raw.maxPreviewChars, DEFAULT_CONFIG.maxPreviewChars, 1),
 		cacheEntries: asNumber(raw.cacheEntries, DEFAULT_CONFIG.cacheEntries, 0),
 		failureThreshold: asNumber(raw.failureThreshold, DEFAULT_CONFIG.failureThreshold, 1),
-		usePermissionSystemYolo: asBoolean(raw.usePermissionSystemYolo, DEFAULT_CONFIG.usePermissionSystemYolo),
 		workingDirectories: asStringArray(raw.workingDirectories, DEFAULT_WORKING_DIRECTORIES),
 		hardBlock: {
 			patterns: asStringArray(hardBlock.patterns, DEFAULT_HARD_BLOCK_PATTERNS),
 			exemptions: asStringArray(hardBlock.exemptions, DEFAULT_HARD_BLOCK_EXEMPTIONS),
 		},
+		fileTools: { credential: asRuleState(fileTools.credential, DEFAULT_CONFIG.fileTools.credential) },
+		bash: asRuleMap(raw.bash, DEFAULT_BASH_RULES),
+		audit: { enabled: asBoolean(audit.enabled, DEFAULT_CONFIG.audit.enabled) },
 		catastrophe: {
 			paths: asStringArray(catastrophe.paths, DEFAULT_CATASTROPHE_PATHS),
 			commands: asStringArray(catastrophe.commands, DEFAULT_CATASTROPHE_COMMANDS),
@@ -859,12 +946,268 @@ export class CircuitBreaker {
 }
 
 /** The single classify question, shaped for `ctx.modelRegistry.classify()`. */
-export function buildQuestion(rules: BashSafetyRules): Record<string, unknown> {
+export function buildQuestion(rules: PermissionsRules): Record<string, unknown> {
 	return {
 		verdict: {
 			type: "choice",
 			instructions: rules.instructions,
 			criteria: { ...rules.criteria },
 		},
+	};
+}
+
+// --- config value coercion ------------------------------------------------
+
+const RULE_STATES: RuleState[] = ["allow", "ask", "deny"];
+
+function asRuleState(value: unknown, fallback: RuleState): RuleState {
+	return typeof value === "string" && (RULE_STATES as string[]).includes(value) ? (value as RuleState) : fallback;
+}
+
+function asRuleMap(value: unknown, fallback: Record<string, RuleState>): Record<string, RuleState> {
+	if (!isRecord(value)) return fallback;
+	const out: Record<string, RuleState> = {};
+	for (const [glob, state] of Object.entries(value)) {
+		if (typeof state === "string" && (RULE_STATES as string[]).includes(state)) out[glob] = state as RuleState;
+	}
+	return Object.keys(out).length > 0 ? out : fallback;
+}
+
+// --- modes ----------------------------------------------------------------
+
+/** Read `selectedMode` out of a `pi-plan-build-state` entry payload. */
+export function modeFromEntryData(data: unknown): Mode | undefined {
+	if (!isRecord(data)) return undefined;
+	const selected = data.selectedMode;
+	return selected === "plan" || selected === "build" ? selected : undefined;
+}
+
+/** Newest matching entry wins, so the branch is passed in path order. */
+export function modeFromEntries(entries: Array<{ customType?: string; data?: unknown }>): Mode | undefined {
+	let found: Mode | undefined;
+	for (const entry of entries) {
+		if (entry.customType !== PLAN_BUILD_STATE_TYPE) continue;
+		const mode = modeFromEntryData(entry.data);
+		if (mode !== undefined) found = mode;
+	}
+	return found;
+}
+
+/**
+ * Startup flags win: they are the only signal available before the first state
+ * entry exists. Otherwise the persisted mode, then the pi-plan-build default.
+ */
+export function resolveMode(options: { planFlag?: boolean; buildFlag?: boolean; persisted?: Mode }): Mode {
+	if (options.buildFlag === true) return "build";
+	if (options.planFlag === true) return "plan";
+	return options.persisted ?? "build";
+}
+
+// --- tool categories ------------------------------------------------------ 
+
+export type ToolCategory = "read" | "effectful" | "neutral";
+
+export const READ_TOOLS: string[] = ["read", "grep", "find", "ls"];
+export const SHELL_TOOLS: string[] = ["bash", "powershell"];
+export const FILE_WRITE_TOOLS: string[] = ["write", "edit"];
+export const EFFECTFUL_TOOLS: string[] = [...SHELL_TOOLS, ...FILE_WRITE_TOOLS];
+
+export function isShellTool(toolName: string): boolean {
+	return SHELL_TOOLS.includes(toolName);
+}
+
+/** The `mcp` proxy tool, and directly registered `mcp__server__tool` names. */
+export function isMcpTool(toolName: string): boolean {
+	return toolName === "mcp" || toolName.startsWith("mcp_") || toolName.startsWith("mcp__");
+}
+
+/** Reads are decided deterministically; effectful tools can reach the classifier. */
+export function toolCategory(toolName: string): ToolCategory {
+	if (READ_TOOLS.includes(toolName)) return "read";
+	if (EFFECTFUL_TOOLS.includes(toolName) || isMcpTool(toolName)) return "effectful";
+	return "neutral";
+}
+
+// --- globs ----------------------------------------------------------------
+
+/** Whole-string glob: `*` becomes `.*`, `?` becomes `.`, a trailing ` *` optional. */
+export function matchesGlob(glob: string, value: string): boolean {
+	let escaped = glob
+		.replaceAll("\\", "/")
+		.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+		.replace(/\*/g, ".*")
+		.replace(/\?/g, ".");
+	if (escaped.endsWith(" .*")) escaped = `${escaped.slice(0, -3)}( .*)?`;
+	return new RegExp(`^${escaped}$`).test(value);
+}
+
+/** Last-match-wins over an ordered rule map. */
+export function ruleVerdict(rules: Record<string, RuleState>, value: string): RuleState {
+	let verdict: RuleState = "allow";
+	for (const [glob, state] of Object.entries(rules)) {
+		if (matchesGlob(glob, value)) verdict = state;
+	}
+	return verdict;
+}
+
+// --- decisions ------------------------------------------------------------
+
+export type Decision =
+	| { kind: "allow" }
+	| { kind: "block"; reason: string }
+	| { kind: "ask"; reason: string }
+	| { kind: "classify" };
+
+export interface SwitchState {
+	jev: boolean;
+	yolo: boolean;
+}
+
+export interface DeterministicInput {
+	toolName: string;
+	mode: Mode;
+	switches: SwitchState;
+	policy: PermissionsConfig;
+	/** The shell command, for bash and powershell. */
+	command?: string | undefined;
+	/** The target path, for the path-bearing file tools. */
+	targetPath?: string | undefined;
+}
+
+/**
+ * The deterministic half of the policy, in the order the layers apply.
+ *
+ * 1. YOLO on means no gating at all, hard blocks included.
+ * 2. Hard blocks: credential patterns and catastrophic directories.
+ * 3. Mode: shell mutations and effectful MCP are refused in Plan mode. `write` and
+ *    `edit` are deliberately left to pi-plan-build, which already blocks them there
+ *    and already exempts the plan Markdown that Plan mode has to be able to revise.
+ * 4. Declarative bash globs.
+ * 5. Jev, for effectful tools only, and only for a command a glob cannot read.
+ */
+export function resolveDeterministic(input: DeterministicInput): Decision {
+	const { toolName, mode, switches, policy } = input;
+	const category = toolCategory(toolName);
+
+	if (switches.yolo) return { kind: "allow" };
+
+	if (input.command !== undefined) {
+		const pattern = matchHardBlock(input.command, policy.hardBlock.patterns, policy.hardBlock.exemptions);
+		if (pattern !== null) return { kind: "block", reason: hardBlockReason(pattern) };
+		const catastrophe = matchCatastrophe(input.command, policy.catastrophe);
+		if (catastrophe !== undefined) return { kind: "block", reason: catastropheReason(catastrophe) };
+	}
+
+	if (input.targetPath !== undefined) {
+		const pattern = matchHardBlock(input.targetPath, policy.hardBlock.patterns, policy.hardBlock.exemptions);
+		if (pattern !== null && policy.fileTools.credential !== "allow") {
+			const reason = `permissions: '${pattern}' is a credential path, and reading or writing it needs approval.`;
+			return policy.fileTools.credential === "deny" ? { kind: "block", reason } : { kind: "ask", reason };
+		}
+	}
+
+	if (mode === "plan" && (isShellTool(toolName) || isMcpTool(toolName))) {
+		const state = policy.modes.plan.mutations;
+		if (state !== "allow") {
+			const reason = `permissions: '${toolName}' can mutate state, and Plan mode is read-only. Switch to Build mode to run it.`;
+			return state === "deny" ? { kind: "block", reason } : { kind: "ask", reason };
+		}
+	}
+
+	if (input.command !== undefined && isShellTool(toolName)) {
+		const verdict = ruleVerdict(policy.bash, input.command);
+		if (verdict === "deny") {
+			return { kind: "block", reason: `permissions: blocked by a bash rule. Rejecting: ${capText(input.command, 200)}` };
+		}
+		if (verdict === "ask") {
+			return { kind: "ask", reason: `permissions: a bash rule requires approval for: ${capText(input.command, 200)}` };
+		}
+	}
+
+	if (category === "effectful" && switches.jev) {
+		if (isShellTool(toolName)) {
+			// A single command with no shell syntax, and a read-only chain, were already
+			// decided by the globs above, so they cost no classifier call.
+			if (input.command === undefined) return { kind: "allow" };
+			if (!isCompoundOrInterpreter(input.command)) return { kind: "allow" };
+			if (isReadOnlyChain(input.command)) return { kind: "allow" };
+		}
+		return { kind: "classify" };
+	}
+
+	return { kind: "allow" };
+}
+
+// --- Jev payload ---------------------------------------------------------- 
+
+export interface JevPayloadInput {
+	toolName: string;
+	mode: Mode;
+	command?: string | undefined;
+	targetPath?: string | undefined;
+	preview?: string | undefined;
+	intent: IntentSnapshot;
+	environment: string;
+	maxCommandChars: number;
+	maxPreviewChars: number;
+}
+
+// --- subagent ask forwarding ---------------------------------------------- 
+// A subagent has no UI, so an ask has to travel to the interactive parent. The
+// protocol is files under the forwarding root, polled on both ends: the requester
+// writes a request and waits for a response, the parent scans, prompts, and answers.
+
+export const FORWARDING_DIR = "permission-forwarding";
+export const SUBAGENT_ENV_KEYS = ["PI_IS_SUBAGENT", "PI_SUBAGENT_SESSION_ID", "PI_AGENT_ROUTER_SUBAGENT"] as const;
+export const PARENT_SESSION_ENV_KEY = "PI_AGENT_ROUTER_PARENT_SESSION_ID";
+export const FORWARDING_AGENT_DIR_ENV_KEY = "PI_PERMISSION_SYSTEM_FORWARDING_AGENT_DIR";
+
+export interface ForwardedRequest {
+	id: string;
+	toolName: string;
+	message: string;
+	createdAt: number;
+}
+
+export interface ForwardedResponse {
+	id: string;
+	approved: boolean;
+	respondedAt: number;
+}
+
+/** Session directories for one forwarding root and session id. */
+export function forwardingPaths(root: string, sessionId: string): { requests: string; responses: string } {
+	const base = `${root}/${FORWARDING_DIR}/sessions/${encodeURIComponent(sessionId)}`;
+	return { requests: `${base}/requests`, responses: `${base}/responses` };
+}
+
+export function isSubagentEnv(env: Record<string, string | undefined>): boolean {
+	return SUBAGENT_ENV_KEYS.some((key) => {
+		const value = env[key];
+		return value !== undefined && value !== "" && value !== "false" && value !== "0";
+	});
+}
+
+/** A response is only accepted for the request it answers. */
+export function parseForwardedResponse(raw: string, requestId: string): ForwardedResponse | undefined {
+	try {
+		const parsed = JSON.parse(raw) as { id?: unknown; approved?: unknown };
+		if (parsed.id !== requestId || typeof parsed.approved !== "boolean") return undefined;
+		return { id: requestId, approved: parsed.approved, respondedAt: Date.now() };
+	} catch {
+		return undefined;
+	}
+}
+
+/** The bounded state a classification is made from. */
+export function buildJevPayload(input: JevPayloadInput): Record<string, unknown> {
+	return {
+		tool: input.toolName,
+		mode: input.mode,
+		...(input.command === undefined ? {} : { command: capText(input.command, input.maxCommandChars) }),
+		...(input.targetPath === undefined ? {} : { targetPath: input.targetPath }),
+		...(input.preview === undefined ? {} : { preview: capText(input.preview, input.maxPreviewChars) }),
+		session: input.intent,
+		environment: input.environment,
 	};
 }

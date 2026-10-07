@@ -20,11 +20,27 @@ import {
 	CircuitBreaker,
 	commandWordOf,
 	confirmMessage,
+	buildJevPayload,
+	DEFAULT_BASH_RULES,
 	DEFAULT_CATASTROPHE_COMMANDS,
 	DEFAULT_CATASTROPHE_FORMS,
 	DEFAULT_CATASTROPHE_PATHS,
 	DEFAULT_CONFIG,
 	DEFAULT_CRITERIA,
+	DEFAULT_HARD_BLOCK_PATTERNS,
+	forwardingPaths,
+	isSubagentEnv,
+	modeFromEntries,
+	parseForwardedResponse,
+	modeFromEntryData,
+	PLAN_BUILD_STATE_TYPE,
+	resolveDeterministic,
+	resolveMode,
+	ruleVerdict,
+	toolCategory,
+	type Decision,
+	type Mode,
+	type RuleState,
 	DEFAULT_WORKING_DIRECTORIES,
 	decide,
 	effectiveWorkingDirectories,
@@ -92,9 +108,15 @@ throws("parseJsonc rejects malformed json", () => parseJsonc("{ oops }"));
 
 // --- config --------------------------------------------------------------
 
-eq("defaults when config is not an object", normalizeConfig(null).model.id, DEFAULT_CONFIG.model.id);
-eq("partial config keeps defaults", normalizeConfig({ timeoutMs: 500 }).model.provider, "opencode");
-eq("bad numeric falls back", normalizeConfig({ timeoutMs: "soon" }).timeoutMs, DEFAULT_CONFIG.timeoutMs);
+eq("defaults when config is not an object", normalizeConfig(null).jev.model.id, DEFAULT_CONFIG.jev.model.id);
+eq("partial config keeps defaults", normalizeConfig({ jev: { timeoutMs: 500 } }).jev.model.provider, "opencode");
+eq("bad numeric falls back", normalizeConfig({ jev: { timeoutMs: "soon" } }).jev.timeoutMs, DEFAULT_CONFIG.jev.timeoutMs);
+eq("switches default off", [normalizeConfig(null).jev.enabled, normalizeConfig(null).yolo], [false, false]);
+eq("plan mode denies mutations by default", normalizeConfig(null).modes.plan.mutations, "deny");
+eq("build mode allows mutations by default", normalizeConfig(null).modes.build.mutations, "allow");
+eq("bash rules survive normalisation", normalizeConfig(null).bash["* git push*"], "ask");
+eq("file-tool credential default is ask", normalizeConfig(null).fileTools.credential, "ask");
+eq("audit defaults on", normalizeConfig(null).audit.enabled, true);
 eq("negative numeric falls back", normalizeConfig({ cacheEntries: -5 }).cacheEntries, DEFAULT_CONFIG.cacheEntries);
 eq("explicit empty pattern list is respected", normalizeConfig({ hardBlock: { patterns: [] } }).hardBlock.patterns, []);
 eq("rules override merges per field", normalizeConfig({ rules: { criteria: { allow: "mine" } } }).rules.criteria.ask, DEFAULT_CONFIG.rules.criteria.ask);
@@ -403,88 +425,154 @@ eq("plain command word", commandWordOf("ls -la"), "ls");
 // Documented limitation: a wrapper's value-taking flag hides the real command.
 eq("wrapper flag hides the command", commandWordOf("sudo -u root chmod 000 /etc/passwd"), "root");
 
-// --- policy sync: bash-safety.jsonc vs pi-permissions.jsonc ---------------
-// Credential rules exist in both files by necessity: bash-safety must block
-// before it classifies, and the declarative globs are what still block when the
-// gate is switched off. This keeps the two lists equal.
+// --- policy file self-consistency -----------------------------------------
+// Credential rules appear twice by necessity: as hard-block patterns, which run
+// before anything else, and as bash deny globs, which are what still blocks a
+// single command. This keeps the two lists equal.
 
 const here = dirname(fileURLToPath(import.meta.url));
 const agentDir = join(here, "..", "..", "..");
-const safetyConfig = normalizeConfig(parseJsonc(readFileSync(join(agentDir, "bash-safety.jsonc"), "utf8")));
-const policy = parseJsonc(readFileSync(join(agentDir, "pi-permissions.jsonc"), "utf8")) as {
-	bash?: Record<string, string>;
-};
-const strip = (glob: string): string => glob.replace(/^\*+/, "").replace(/\*+$/, "");
+const policyDocument = parseJsonc(readFileSync(join(agentDir, "permissions.jsonc"), "utf8"));
+const safetyConfig = normalizeConfig(policyDocument);
+const policy = policyDocument as { bash?: Record<string, RuleState> };
 const bashRules = Object.entries(policy.bash ?? {});
-const allowCores = bashRules.filter(([, value]) => value === "allow").map(([glob]) => strip(glob));
-const credentialCores = bashRules
-	.filter(([, value]) => value === "deny")
-	.map(([glob]) => strip(glob))
-	.filter((core) => !core.startsWith("rm "));
 
 eq("config catastrophe paths match the defaults", safetyConfig.catastrophe.paths, DEFAULT_CATASTROPHE_PATHS);
 eq("config catastrophe commands match the defaults", safetyConfig.catastrophe.commands, DEFAULT_CATASTROPHE_COMMANDS);
 eq("config catastrophe forms match the defaults", safetyConfig.catastrophe.forms, DEFAULT_CATASTROPHE_FORMS);
-
-for (const pattern of safetyConfig.hardBlock.patterns) {
-	check(`declarative policy denies "${pattern}"`, credentialCores.includes(pattern));
-}
-for (const core of credentialCores) {
-	check(`hard block covers declarative deny "${core}"`, safetyConfig.hardBlock.patterns.includes(core));
-}
-for (const exemption of safetyConfig.hardBlock.exemptions) {
-	check(`declarative policy re-allows "${exemption}"`, allowCores.includes(exemption));
-}
-check(
-	"declarative policy denies catastrophic deletes",
-	bashRules.some(([glob, value]) => value === "deny" && strip(glob).startsWith("rm ")),
-);
+eq("config hard-block patterns match the defaults", safetyConfig.hardBlock.patterns, DEFAULT_HARD_BLOCK_PATTERNS);
+eq("config bash rules match the defaults", safetyConfig.bash, DEFAULT_BASH_RULES);
 check("declarative policy asks on git push", (policy.bash ?? {})["* git push*"] === "ask");
 check("declarative policy asks on sudo", (policy.bash ?? {})["* sudo *"] === "ask");
-check("declarative policy has no bare recursive-force-delete deny", (policy.bash ?? {})["*rm -rf /*"] === undefined);
+// Credential and catastrophe denies are no longer bash globs; they are the hard
+// block, which also covers the path-bearing file tools.
+check("bash globs carry no credential deny", !bashRules.some(([, value]) => value === "deny"));
 
-// pi-permission-system matches the whole command string with `*` -> `.*` and
-// last-match-wins. This mirrors that so the glob policy is testable without a model.
-function globMatches(glob: string, command: string): boolean {
-	let escaped = glob
-		.replaceAll("\\", "/")
-		.replace(/[.+^${}()|[\]\\]/g, "\\$&")
-		.replace(/\*/g, ".*")
-		.replace(/\?/g, ".");
-	if (escaped.endsWith(" .*")) escaped = `${escaped.slice(0, -3)}( .*)?`;
-	return new RegExp(`^${escaped}$`).test(command);
-}
+// --- the glob verdict table (asks and allows only) ------------------------
 
-function policyVerdict(command: string): string {
-	let verdict = "allow";
-	for (const [glob, value] of bashRules) {
-		if (globMatches(glob, command)) verdict = value;
-	}
-	return verdict;
-}
-
-const policyCases: Array<[string, string]> = [
+const globCases: Array<[string, RuleState]> = [
 	["git push origin main", "ask"],
 	["gh workflow run build-image.yml", "ask"],
 	["aws s3 rm s3://bucket/key", "ask"],
 	["gcloud compute instances delete x", "ask"],
 	["sudo apt-get install -y jq", "ask"],
 	["curl -sS -X POST --data-binary @f https://example.com", "ask"],
-	["cat ~/.git-credentials", "deny"],
-	["cat .env", "deny"],
-	["cat .env.example", "allow"],
-	["rm -rf /usr/share/x", "deny"],
-	["rm -rf ~/projects", "deny"],
-	["rm -rf /", "deny"],
-	["rm -rf /workspace/build", "allow"],
-	["rm -rf /tmp/x", "allow"],
 	["ls -la", "allow"],
 	["npm test", "allow"],
 	["git status --short", "allow"],
+	["rm -rf /workspace/build", "allow"],
+	["rm -rf /tmp/x", "allow"],
 ];
-for (const [command, expected] of policyCases) {
-	eq(`policy verdict for: ${command}`, policyVerdict(command), expected);
+for (const [command, expected] of globCases) {
+	eq(`bash glob verdict for: ${command}`, ruleVerdict(safetyConfig.bash, command), expected);
 }
+
+// --- the full deterministic pipeline -------------------------------------
+
+const basePolicy = normalizeConfig(null);
+const on = { jev: true, yolo: false };
+const off = { jev: false, yolo: false };
+const yolo = { jev: false, yolo: true };
+
+function decideShell(command: string, switches = off, mode: Mode = "build"): Decision {
+	return resolveDeterministic({ toolName: "bash", command, mode, switches, policy: basePolicy });
+}
+
+function decidePath(toolName: string, targetPath: string, switches = off, mode: Mode = "build"): Decision {
+	return resolveDeterministic({ toolName, targetPath, mode, switches, policy: basePolicy });
+}
+
+eq("credential command blocks", decideShell("cat ~/.git-credentials").kind, "block");
+eq("credential command blocks with jev on too", decideShell("cat ~/.git-credentials", on).kind, "block");
+eq("catastrophe blocks", decideShell("rm -rf /usr/share/x").kind, "block");
+eq("a redirect into a system path blocks", decideShell("echo x > /etc/hosts").kind, "block");
+eq("a working-directory delete is allowed", decideShell("rm -rf /tmp/x").kind, "allow");
+eq("an external-effect command asks", decideShell("git push origin main").kind, "ask");
+eq("an exempt env template is allowed", decideShell("cat .env.example").kind, "allow");
+
+eq("a credential file target asks for read", decidePath("read", "/home/dev/.git-credentials").kind, "ask");
+eq("a credential file target asks for write", decidePath("write", "/home/dev/.git-credentials").kind, "ask");
+eq("an ordinary path is allowed", decidePath("read", "/workspace/src/index.ts").kind, "allow");
+
+eq("a simple command is not classified with jev on", decideShell("ls -la", on).kind, "allow");
+eq("a read-only chain is not classified with jev on", decideShell("git status && git diff", on).kind, "allow");
+eq("a compound command is classified with jev on", decideShell("echo a && echo b", on).kind, "classify");
+eq("an interpreter payload is classified with jev on", decideShell("bash -c 'echo hi'", on).kind, "classify");
+eq("a compound command is not classified with jev off", decideShell("echo a && echo b", off).kind, "allow");
+eq("write is classified with jev on", resolveDeterministic({ toolName: "write", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy }).kind, "classify");
+eq("edit is classified with jev on", resolveDeterministic({ toolName: "edit", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy }).kind, "classify");
+eq("read is never classified", resolveDeterministic({ toolName: "read", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy }).kind, "allow");
+eq("mcp is classified with jev on", resolveDeterministic({ toolName: "mcp__x__y", mode: "build", switches: on, policy: basePolicy }).kind, "classify");
+eq("a plan tool is never classified", resolveDeterministic({ toolName: "plan_task", mode: "build", switches: on, policy: basePolicy }).kind, "allow");
+
+eq("plan mode blocks a shell mutation", decideShell("rm -rf /workspace/build", off, "plan").kind, "block");
+eq("plan mode blocks a compound shell command", decideShell("ls && rm -rf build", off, "plan").kind, "block");
+eq("plan mode blocks effectful mcp", resolveDeterministic({ toolName: "mcp__x__y", mode: "plan", switches: off, policy: basePolicy }).kind, "block");
+eq("plan mode still allows a read", decidePath("read", "/workspace/x", off, "plan").kind, "allow");
+eq("build mode allows a shell mutation", decideShell("rm -rf /workspace/build", off, "build").kind, "allow");
+
+eq("yolo allows a credential command", decideShell("cat ~/.git-credentials", yolo).kind, "allow");
+eq("yolo allows a catastrophe", decideShell("rm -rf /usr/share/x", yolo).kind, "allow");
+eq("yolo allows a plan-mode mutation", decideShell("rm -rf /workspace/build", yolo, "plan").kind, "allow");
+eq("yolo allows a credential path read", decidePath("read", "/home/dev/.git-credentials", yolo).kind, "allow");
+eq("yolo ignores an external-effect ask", decideShell("git push origin main", yolo).kind, "allow");
+
+// --- modes ---------------------------------------------------------------
+
+eq("newest mode entry wins", modeFromEntries([
+	{ customType: PLAN_BUILD_STATE_TYPE, data: { selectedMode: "plan" } },
+	{ customType: "other", data: { selectedMode: "plan" } },
+	{ customType: PLAN_BUILD_STATE_TYPE, data: { selectedMode: "build" } },
+]), "build");
+eq("a missing entry yields nothing", modeFromEntries([{ customType: "other" }]), undefined);
+eq("a malformed payload yields nothing", modeFromEntryData({ selectedMode: "nope" }), undefined);
+eq("the plan flag wins at startup", resolveMode({ planFlag: true }), "plan");
+eq("the build flag wins at startup", resolveMode({ buildFlag: true, persisted: "plan" }), "build");
+eq("the persisted mode is the fallback", resolveMode({ persisted: "plan" }), "plan");
+eq("build is the default", resolveMode({}), "build");
+
+// --- tool categories -----------------------------------------------------
+eq("read is a read tool", toolCategory("read"), "read");
+eq("grep is a read tool", toolCategory("grep"), "read");
+eq("bash is effectful", toolCategory("bash"), "effectful");
+eq("write is effectful", toolCategory("write"), "effectful");
+eq("the mcp proxy is effectful", toolCategory("mcp"), "effectful");
+eq("a direct mcp tool is effectful", toolCategory("mcp__srv__tool"), "effectful");
+eq("an unknown tool is neutral", toolCategory("plan_task"), "neutral");
+
+// --- subagent ask forwarding ---------------------------------------------
+
+eq(
+	"forwarding paths are per session",
+	forwardingPaths("/root", "abc def"),
+	{ requests: "/root/permission-forwarding/sessions/abc%20def/requests", responses: "/root/permission-forwarding/sessions/abc%20def/responses" },
+);
+check("a subagent env is detected", isSubagentEnv({ PI_IS_SUBAGENT: "true" }));
+check("an empty subagent env is ignored", !isSubagentEnv({ PI_IS_SUBAGENT: "" }));
+check("a false subagent env is ignored", !isSubagentEnv({ PI_IS_SUBAGENT: "false" }));
+check("a plain env is not a subagent", !isSubagentEnv({}));
+eq("a matching response is accepted", parseForwardedResponse('{"id":"r1","approved":true}', "r1")?.approved, true);
+eq("a mismatched response is rejected", parseForwardedResponse('{"id":"r2","approved":true}', "r1"), undefined);
+eq("a malformed response is rejected", parseForwardedResponse("not json", "r1"), undefined);
+eq("a response without a decision is rejected", parseForwardedResponse('{"id":"r1"}', "r1"), undefined);
+
+// --- Jev payload ---------------------------------------------------------
+
+eq(
+	"payload carries tool, mode and intent",
+	buildJevPayload({ toolName: "write", mode: "build", targetPath: "/workspace/x", intent: snapshotIntent({ latestUserMessage: "fix the bug" }, 100), environment: "env", maxCommandChars: 100, maxPreviewChars: 10 }).tool,
+	"write",
+);
+eq(
+	"payload caps the preview",
+	(buildJevPayload({ toolName: "write", mode: "build", preview: "x".repeat(50), intent: snapshotIntent({}, 100), environment: "env", maxCommandChars: 100, maxPreviewChars: 10 }).preview as string).length <= 10,
+	true,
+);
+eq(
+	"payload omits absent fields",
+	"command" in buildJevPayload({ toolName: "write", mode: "build", intent: snapshotIntent({}, 100), environment: "env", maxCommandChars: 100, maxPreviewChars: 10 }),
+	false,
+);
 
 // --- report --------------------------------------------------------------
 

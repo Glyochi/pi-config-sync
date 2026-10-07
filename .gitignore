@@ -31,9 +31,9 @@
 !skills
 !skills/
 !skills/**
-!pi-permissions.jsonc
-!pi-permissions.jsonc/
-!pi-permissions.jsonc/**
+!permissions.jsonc
+!permissions.jsonc/
+!permissions.jsonc/**
 !PI-PERMISSIONS.md
 !PI-PERMISSIONS.md/
 !PI-PERMISSIONS.md/**
@@ -46,9 +46,6 @@
 !PI-QUESTION-TOOLS.md
 !PI-QUESTION-TOOLS.md/
 !PI-QUESTION-TOOLS.md/**
-!bash-safety.jsonc
-!bash-safety.jsonc/
-!bash-safety.jsonc/**
 # hard denylist — re-ignored even inside allowed dirs
 **/logs/
 auth*
