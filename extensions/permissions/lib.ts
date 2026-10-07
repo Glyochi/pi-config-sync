@@ -862,6 +862,25 @@ export function confirmMessage(
 // classifier for a command the pipeline would not, and it never presents an opinion as
 // a decision, so one line always says what would actually happen.
 
+/**
+ * Strip one pair of surrounding quotes from a `/permissions check` argument.
+ *
+ * A command with spaces has to be quoted on the command line, and pi passes the
+ * argument text through unchanged, so `check bash "rm -rf /srv/data"` would otherwise
+ * reach the engine with a command word of `"rm` and be misread as harmless.
+ */
+export function stripSurroundingQuotes(value: string): string {
+	const trimmed = value.trim();
+	if (trimmed.length >= 2) {
+		const first = trimmed[0];
+		const last = trimmed[trimmed.length - 1];
+		if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+			return trimmed.slice(1, -1).trim();
+		}
+	}
+	return trimmed;
+}
+
 /** The line for everything the deterministic layer settles by itself. */
 export function describeCheckDecision(input: {
 	toolName: string;

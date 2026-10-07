@@ -49,6 +49,7 @@ import {
 	resolveDeterministic,
 	resolveMode,
 	ruleVerdict,
+	stripSurroundingQuotes,
 	toolCategory,
 	type Decision,
 	type Mode,
@@ -758,6 +759,34 @@ eq(
 	"payload omits absent fields",
 	"command" in buildJevPayload({ toolName: "write", mode: "build", intent: snapshotIntent({}, 100), environment: "env", maxCommandChars: 100, maxPreviewChars: 10 }),
 	false,
+);
+
+// --- check argument quoting -----------------------------------------------
+// A command with spaces is quoted on the command line, and pi passes the argument text
+// through unchanged, so the quotes have to come off before the engine sees it.
+
+eq("double quotes are stripped", stripSurroundingQuotes('"rm -rf /srv/data"'), "rm -rf /srv/data");
+eq("single quotes are stripped", stripSurroundingQuotes("'rm -rf /srv/data'"), "rm -rf /srv/data");
+eq("inner quotes survive", stripSurroundingQuotes("'bash -c \"npm test\"'"), 'bash -c "npm test"');
+eq("an unquoted argument is untouched", stripSurroundingQuotes("ls -la"), "ls -la");
+eq("padding is trimmed", stripSurroundingQuotes('  "ls"  '), "ls");
+eq("an unbalanced quote is left alone", stripSurroundingQuotes('"ls'), '"ls');
+eq("an empty argument stays empty", stripSurroundingQuotes(""), "");
+
+// The reported failure: with the quotes left on, the command word reads as `"rm` and
+// a catastrophe or a destructive verb is missed entirely.
+eq(
+	"a quoted destructive command still needs judgement",
+	needsJudgement(stripSurroundingQuotes('"rm -rf /srv/data"'), basePolicy, CWD),
+	"destructive",
+);
+check(
+	"a quoted catastrophe is still caught",
+	matchCatastrophe(stripSurroundingQuotes('"rm -rf /usr/share/x"'), basePolicy.catastrophe) !== undefined,
+);
+check(
+	"leaving the quotes on would have missed it",
+	matchCatastrophe('"rm -rf /usr/share/x"', basePolicy.catastrophe) === undefined,
 );
 
 // --- behaviour reference --------------------------------------------------

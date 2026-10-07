@@ -46,6 +46,7 @@ import {
 	resolveDeterministic,
 	resolveMode,
 	setBounded,
+	stripSurroundingQuotes,
 	snapshotIntent,
 	toolCategory,
 	verdictFromChoice,
@@ -710,7 +711,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					}
 					const split = rest.indexOf(" ");
 					const toolName = (split === -1 ? rest : rest.slice(0, split)).toLowerCase();
-					const value = split === -1 ? "" : rest.slice(split + 1).trim();
+					// Quoted, because a command with spaces has to be.
+					const value = stripSurroundingQuotes(split === -1 ? "" : rest.slice(split + 1));
 					const command = isShellTool(toolName) ? value : undefined;
 					const targetPath =
 						toolCategory(toolName) === "read" || toolName === "write" || toolName === "edit" ? value : undefined;
