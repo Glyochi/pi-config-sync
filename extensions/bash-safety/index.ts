@@ -22,6 +22,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import {
+	addUsage,
 	buildQuestion,
 	capText,
 	cacheKey,
@@ -34,13 +35,18 @@ import {
 	matchHardBlock,
 	normalizeConfig,
 	parseJsonc,
+	setBounded,
 	snapshotIntent,
 	verdictFromChoice,
 	VerdictCache,
 	type BashSafetyConfig,
 	type IntentSnapshot,
+	type UsageTotals,
 	type Verdict,
 } from "./lib.js";
+
+/** Pending classifier usage entries kept while a bash call is in flight. */
+const PENDING_USAGE_LIMIT = 64;
 
 interface YoloControlResult {
 	yoloMode: boolean;
@@ -71,6 +77,7 @@ interface GateState {
 	breaker: CircuitBreaker;
 	intent: IntentSnapshot;
 	git: { remote: string; branch: string } | undefined;
+	pendingUsage: Map<string, UsageTotals>;
 	lastVerdict: string;
 	yoloNotified: boolean;
 	configNotified: boolean;
@@ -82,6 +89,7 @@ interface ClassifyOutcome {
 	verdict: Verdict;
 	confidence: number | undefined;
 	probabilities: Record<string, number> | undefined;
+	usage: UsageTotals | undefined;
 	error: string | undefined;
 }
 
@@ -202,6 +210,7 @@ function resetState(ctx: ExtensionContext): GateState {
 		breaker: new CircuitBreaker(loaded.config.failureThreshold),
 		intent: readIntent(ctx, loaded.config.maxIntentChars),
 		git: readGit(ctx.cwd),
+		pendingUsage: new Map<string, UsageTotals>(),
 		lastVerdict: "none",
 		yoloNotified: false,
 		configNotified: false,
@@ -249,6 +258,7 @@ async function classify(command: string, ctx: ExtensionContext, state: GateState
 				verdict: "ask",
 				confidence: undefined,
 				probabilities: undefined,
+				usage: undefined,
 				error: `no classifier model for provider ${config.model.provider}`,
 			};
 		}
@@ -273,6 +283,7 @@ async function classify(command: string, ctx: ExtensionContext, state: GateState
 				verdict: "ask",
 				confidence: undefined,
 				probabilities: undefined,
+				usage: undefined,
 				error: result.errorMessage ?? result.stopReason,
 			};
 		}
@@ -288,13 +299,21 @@ async function classify(command: string, ctx: ExtensionContext, state: GateState
 			answer && typeof answer.probabilities === "object" && answer.probabilities !== null
 				? (answer.probabilities as Record<string, number>)
 				: undefined;
-		return { kind: "ok", verdict: verdictFromChoice(choice), confidence, probabilities, error: undefined };
+		return {
+			kind: "ok",
+			verdict: verdictFromChoice(choice),
+			confidence,
+			probabilities,
+			usage: result.usage as UsageTotals | undefined,
+			error: undefined,
+		};
 	} catch (error) {
 		return {
 			kind: "failure",
 			verdict: "ask",
 			confidence: undefined,
 			probabilities: undefined,
+			usage: undefined,
 			error: error instanceof Error ? error.message : String(error),
 		};
 	}
@@ -302,7 +321,7 @@ async function classify(command: string, ctx: ExtensionContext, state: GateState
 
 // --- gate -----------------------------------------------------------------
 
-async function gate(command: unknown, ctx: ExtensionContext): Promise<ToolCallEventResult | undefined> {
+async function gate(command: unknown, toolCallId: string, ctx: ExtensionContext): Promise<ToolCallEventResult | undefined> {
 	if (typeof command !== "string" || command.trim() === "") return undefined;
 	const state = ensureState(ctx);
 	if (!state.config.enabled) return undefined;
@@ -335,6 +354,9 @@ async function gate(command: unknown, ctx: ExtensionContext): Promise<ToolCallEv
 		cached = { verdict: outcome.verdict, confidence: outcome.confidence, probabilities: outcome.probabilities };
 		source = "classifier";
 		state.cache.set(key, cached);
+		// Held until the tool result so the classifier cost lands in session totals.
+		// A blocked call never produces one; setBounded keeps the map from growing.
+		if (outcome.usage !== undefined) setBounded(state.pendingUsage, toolCallId, outcome.usage, PENDING_USAGE_LIMIT);
 	}
 
 	const verdict = cached.verdict;
@@ -386,7 +408,23 @@ export default function bashSafetyExtension(pi: ExtensionAPI): void {
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (!isToolCallEventType("bash", event)) return;
-		return await gate(event.input.command, ctx);
+		return await gate(event.input.command, event.toolCallId, ctx);
+	});
+
+	// Attach the classifier's usage to the bash result so it counts toward the
+	// session cost. details and structuredContent are passed through because a
+	// returned hook result replaces them.
+	pi.on("tool_result", (event) => {
+		const state = gateState;
+		if (state === undefined) return;
+		const usage = state.pendingUsage.get(event.toolCallId);
+		if (usage === undefined) return;
+		state.pendingUsage.delete(event.toolCallId);
+		return {
+			details: event.details,
+			structuredContent: event.structuredContent,
+			usage: addUsage(event.usage as UsageTotals | undefined, usage),
+		};
 	});
 
 	pi.registerCommand("bash-safety", {

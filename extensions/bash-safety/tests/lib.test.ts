@@ -8,6 +8,7 @@
  */
 
 import {
+	addUsage,
 	buildQuestion,
 	capText,
 	cacheKey,
@@ -25,6 +26,7 @@ import {
 	matchHardBlock,
 	normalizeConfig,
 	parseJsonc,
+	setBounded,
 	snapshotIntent,
 	stripJsonComments,
 	stripTrailingCommas,
@@ -156,6 +158,37 @@ check("confirm message omits an empty distribution", !confirmMessage("ask", "cmd
 const outcomeCache = new VerdictCache<{ verdict: string; probabilities: Record<string, number> }>(1);
 outcomeCache.set("k", { verdict: "deny", probabilities: { deny: 0.9 } });
 eq("generic cache keeps the whole record", outcomeCache.get("k")?.probabilities.deny, 0.9);
+
+// --- usage attribution ---------------------------------------------------
+
+const usageA = { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10, cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 } };
+const usageB = { input: 5, output: 6, cacheRead: 7, cacheWrite: 8, totalTokens: 26, cost: { input: 5, output: 6, cacheRead: 7, cacheWrite: 8, total: 26 } };
+eq("missing first usage yields the second", addUsage(undefined, usageA), usageA);
+eq("missing second usage yields the first", addUsage(usageA, undefined), usageA);
+eq("both missing yields nothing", addUsage(undefined, undefined), undefined);
+eq(
+	"usage sums tokens and cost",
+	addUsage(usageA, usageB),
+	{ input: 6, output: 8, cacheRead: 10, cacheWrite: 12, totalTokens: 36, cost: { input: 6, output: 8, cacheRead: 10, cacheWrite: 12, total: 36 } },
+);
+
+const bounded = new Map<string, number>();
+setBounded(bounded, "a", 1, 2);
+setBounded(bounded, "b", 2, 2);
+setBounded(bounded, "c", 3, 2);
+eq("bounded map evicts the oldest", bounded.has("a"), false);
+eq("bounded map stays at its cap", bounded.size, 2);
+eq("bounded map keeps the newest", bounded.get("c"), 3);
+const refresh = new Map<string, number>();
+setBounded(refresh, "a", 1, 2);
+setBounded(refresh, "b", 2, 2);
+setBounded(refresh, "a", 9, 2);
+setBounded(refresh, "c", 3, 2);
+eq("re-inserting refreshes recency", refresh.has("b"), false);
+eq("re-inserting keeps the new value", refresh.get("a"), 9);
+const zeroBounded = new Map<string, number>();
+setBounded(zeroBounded, "a", 1, 0);
+eq("zero cap stores nothing", zeroBounded.size, 0);
 
 // --- intent, capping, cache ---------------------------------------------
 

@@ -393,6 +393,55 @@ export function snapshotIntent(
 	};
 }
 
+/**
+ * Structural view of pi's Usage record. Declared locally so this module stays
+ * free of `@earendil-works/...` imports.
+ */
+export interface UsageTotals {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	totalTokens: number;
+	cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+}
+
+/** Sum two usage records, tolerating either side being absent. */
+export function addUsage(first: UsageTotals | undefined, second: UsageTotals | undefined): UsageTotals | undefined {
+	if (first === undefined) return second;
+	if (second === undefined) return first;
+	return {
+		input: first.input + second.input,
+		output: first.output + second.output,
+		cacheRead: first.cacheRead + second.cacheRead,
+		cacheWrite: first.cacheWrite + second.cacheWrite,
+		totalTokens: first.totalTokens + second.totalTokens,
+		cost: {
+			input: first.cost.input + second.cost.input,
+			output: first.cost.output + second.cost.output,
+			cacheRead: first.cost.cacheRead + second.cost.cacheRead,
+			cacheWrite: first.cost.cacheWrite + second.cost.cacheWrite,
+			total: first.cost.total + second.cost.total,
+		},
+	};
+}
+
+/**
+ * Insert into a bounded insertion-ordered map, evicting the oldest entry first.
+ * Used for classifier usage awaiting its tool result: a blocked call never
+ * produces one, so the map has to stay bounded on its own.
+ */
+export function setBounded<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
+	if (max <= 0) return;
+	map.delete(key);
+	map.set(key, value);
+	while (map.size > max) {
+		const oldest = map.keys().next();
+		if (oldest.done === true) break;
+		map.delete(oldest.value);
+	}
+}
+
 /** Stable, dependency-free hash used for cache keys. */
 export function hashText(text: string): string {
 	let hash = 0x811c9dc5;
