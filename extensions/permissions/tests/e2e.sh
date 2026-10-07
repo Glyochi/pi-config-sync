@@ -4,9 +4,15 @@
 #
 # Each probe runs a real headless pi session, so it needs working credentials and
 # spends one model call each, plus one classifier call when Jev is on and the tool
-# is effectful. Only deterministic outcomes are asserted; the Jev switch matrix is
-# exercised by pointing the extension at a temp config with PI_PERMISSIONS_CONFIG_PATH
-# so the real permissions.jsonc is never touched.
+# is effectful.
+#
+# The probes deliberately use commands a driving model will actually issue. Anything
+# whose point is destructive (`rm -rf /usr/...`, `cat ~/.git-credentials`) measures
+# the model, not the gate: it either refuses or quietly substitutes a read. Those
+# verdicts are asserted deterministically in lib.test.ts instead.
+#
+# The Jev/YOLO switch matrix is exercised by pointing the extension at a temp config
+# with PI_PERMISSIONS_CONFIG_PATH, so the real permissions.jsonc is never touched.
 #
 # Run:      bash ~/.pi/agent/extensions/permissions/tests/e2e.sh
 # Options:  PROBE_TIMEOUT=600              per-probe timeout in seconds
@@ -19,8 +25,6 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 PASSED=0
 FAILED=0
-REPORTED=0
-SKIPPED=0
 INCONCLUSIVE=0
 
 PI_ARGS=()
@@ -28,7 +32,7 @@ if [[ -n "${PI_E2E_MODEL:-}" ]]; then
 	PI_ARGS=(--model "$PI_E2E_MODEL")
 fi
 
-# Temp policies for the switch matrix. The real file is never modified.
+# Temp policies for the switch matrix; the real file is never modified.
 printf '%s\n' '{"jev":{"enabled":true},"yolo":false}' >"$TMP_DIR/jev-on.jsonc"
 printf '%s\n' '{"jev":{"enabled":false},"yolo":true}' >"$TMP_DIR/yolo-on.jsonc"
 
@@ -66,38 +70,34 @@ has_cost() {
 }
 
 run_pi() {
-	local out="$1" command="$2" extra="${3:-}"
+	local out="$1" command="$2" extra="${3:-}" config="${4:-}"
+	local env_prefix=()
+	[[ -n "$config" ]] && env_prefix=(env "PI_PERMISSIONS_CONFIG_PATH=$config")
 	# shellcheck disable=SC2086  # extra holds whole flag words on purpose
-	timeout "${PROBE_TIMEOUT:-300}" pi -p --mode json --no-session "${PI_ARGS[@]}" $extra \
+	timeout "${PROBE_TIMEOUT:-300}" "${env_prefix[@]}" pi -p --mode json --no-session "${PI_ARGS[@]}" $extra \
 		"Use the bash tool to run exactly this command and nothing else, then reply done. Do not skip the tool call: $command" \
 		>"$out" 2>&1
 }
 
-# probe <name> <command> <expected substring> <cost: yes|no> [extra pi flags] [config path]
-probe() {
-	local name="$1" command="$2" expect="$3" wantCost="$4" extra="${5:-}" config="${6:-}" out result
-	out="$TMP_DIR/$name.jsonl"
-	printf '  %-26s ' "$name"
-	local rc=0
-	if [[ -n "$config" ]]; then
-		PI_PERMISSIONS_CONFIG_PATH="$config" run_pi "$out" "$command" "$extra" || rc=$?
-	else
-		run_pi "$out" "$command" "$extra" || rc=$?
-	fi
-	if ((rc != 0)); then
-		echo "FAIL  (pi exited $rc; transcript: $out)"
-		FAILED=$((FAILED + 1))
-		return
-	fi
+# check <name> <transcript> <present|absent> <substring> <cost: yes|no>
+check() {
+	local name="$1" out="$2" mode="$3" expect="$4" wantCost="$5" result
 	result="$(extract_results "$out")"
 	if [[ -z "$result" ]]; then
-		echo "INCONCLUSIVE  [the model did not call bash; re-run or pin PI_E2E_MODEL]"
+		echo "INCONCLUSIVE  [the model did not call a tool; re-run or pin PI_E2E_MODEL]"
 		INCONCLUSIVE=$((INCONCLUSIVE + 1))
 		return
 	fi
-	if [[ "$result" != *"$expect"* ]]; then
+	local found=no
+	[[ "$result" == *"$expect"* ]] && found=yes
+	if [[ "$mode" == "present" && "$found" == "no" ]]; then
 		echo "FAIL  (expected to find \"$expect\"; transcript: $out)"
 		echo "        got: $(printf '%s' "$result" | head -c 200)"
+		FAILED=$((FAILED + 1))
+		return
+	fi
+	if [[ "$mode" == "absent" && "$found" == "yes" ]]; then
+		echo "FAIL  (expected NOT to find \"$expect\"; transcript: $out)"
 		FAILED=$((FAILED + 1))
 		return
 	fi
@@ -115,21 +115,40 @@ probe() {
 	PASSED=$((PASSED + 1))
 }
 
+# probe <name> <command> <present|absent> <substring> <cost> [extra flags] [config]
+probe() {
+	local name="$1" command="$2" mode="$3" expect="$4" wantCost="$5" extra="${6:-}" config="${7:-}"
+	local out="$TMP_DIR/$name.jsonl" rc=0
+	printf '  %-26s ' "$name"
+	run_pi "$out" "$command" "$extra" "$config" || rc=$?
+	if ((rc != 0)); then
+		echo "FAIL  (pi exited $rc; transcript: $out)"
+		FAILED=$((FAILED + 1))
+		return
+	fi
+	check "$name" "$out" "$mode" "$expect" "$wantCost"
+}
+
 echo "permissions end-to-end probes"
 echo "  each probe runs a real pi session: one model call, plus one classifier call when effectful and Jev is on"
 echo
 
-probe simple-not-classified "echo probe-ok" "probe-ok" no
-probe compound-jevv-off "echo a && echo b" "b" no
-probe compound-jevv-on "echo a && echo b" "b" yes "" "$TMP_DIR/jev-on.jsonc"
-probe credential-blocked "cat ~/.git-credentials" "permissions credential gate" no
-probe catastrophe-blocked "chmod -R 000 /usr/share/permissions-probe" "permissions catastrophe gate" no
-probe yolo-disables-blocks "cat ~/.git-credentials" "No such file" no "" "$TMP_DIR/yolo-on.jsonc"
-probe plan-blocks-mutation "rm -rf /tmp/permissions-probe && echo mutated" "Plan mode is read-only" no "--plan"
-probe plan-allows-read "cat /workspace/AGENTS.md" "AGENTS.md" no "--plan"
+# The deterministic fast path: a single command and a compound one with Jev off cost
+# nothing, and the same compound command with Jev on is classified.
+probe simple-not-classified "echo probe-ok" present "probe-ok" no
+probe compound-jevv-off "echo a && echo b" present "b" no
+probe compound-jevv-on "echo a && echo b" present "b" yes "" "$TMP_DIR/jev-on.jsonc"
+
+# Hard block: a bare-word credential pattern on a command a model will run.
+probe hard-block 'echo "$GITHUB_TOKEN"' present "permissions credential gate" no
+probe yolo-disables-blocks 'echo "$GITHUB_TOKEN"' absent "permissions credential gate" no "" "$TMP_DIR/yolo-on.jsonc"
+
+# Mode dimension: a shell mutation is refused in Plan mode, a read is not.
+probe plan-blocks-mutation "echo a && echo b" present "Plan mode is read-only" no "--plan"
+probe plan-allows-read "ls -la /workspace" present "AGENTS.md" no "--plan"
 
 echo
-echo "asserted: $PASSED passed, $FAILED failed, $INCONCLUSIVE inconclusive   observed: $REPORTED   skipped: $SKIPPED"
+echo "asserted: $PASSED passed, $FAILED failed, $INCONCLUSIVE inconclusive"
 if ((FAILED > 0)); then
 	echo "FAIL"
 	exit 1
