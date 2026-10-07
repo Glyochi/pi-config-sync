@@ -33,6 +33,7 @@ import {
 	describeCheckDecision,
 	describeCheckFailure,
 	describeCheckJev,
+	effectiveWorkingDirectories,
 	FORWARDING_AGENT_DIR_ENV_KEY,
 	isMcpTool,
 	isShellTool,
@@ -213,8 +214,14 @@ function readMode(ctx: ExtensionContext, pi: ExtensionAPI): Mode {
 
 function resetState(ctx: ExtensionContext, pi: ExtensionAPI): State {
 	const loaded = loadConfig();
+	// The session cwd counts as a working directory, so a relative target like `build`
+	// resolves inside it and a delete there stays decidable.
+	const config: PermissionsConfig = {
+		...loaded.config,
+		workingDirectories: effectiveWorkingDirectories(loaded.config.workingDirectories, ctx.cwd),
+	};
 	const next: State = {
-		config: loaded.config,
+		config,
 		configPath: configPath(),
 		configStatus: loaded.status,
 		configError: loaded.error,
@@ -451,6 +458,7 @@ async function gate(
 		mode: current.mode,
 		switches: current.switches,
 		policy: current.config,
+		cwd: ctx.cwd,
 		command,
 		targetPath,
 	});
@@ -495,6 +503,7 @@ async function gate(
 			buildJevPayload({
 				toolName: event.toolName,
 				mode: current.mode,
+				cwd: ctx.cwd,
 				command,
 				targetPath,
 				preview: previewOf(event, current.config.maxPreviewChars),
@@ -710,6 +719,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						mode: current.mode,
 						switches: current.switches,
 						policy: current.config,
+						cwd: ctx.cwd,
 						command,
 						targetPath,
 					});
@@ -732,6 +742,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						buildJevPayload({
 							toolName,
 							mode: current.mode,
+							cwd: ctx.cwd,
 							command,
 							targetPath,
 							preview: value,

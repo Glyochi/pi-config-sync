@@ -162,9 +162,11 @@ probe benign-chain-jevv-on "echo a && echo b" present "b" no "" "$TMP_DIR/jev-on
 # An external-effect verb is caught by the globs whether or not it is chained, so the
 # classifier is not needed for it either.
 probe chained-external-effect "git push origin main && echo done" present "a bash rule requires approval" no
-# A destructive verb is one command, but a glob cannot judge it, so it is classified
-# too. This is the gap the `check` report exposed.
-probe destructive-jevv-on "rm -rf /tmp/permissions-probe" any "" consulted "" "$TMP_DIR/jev-on.jsonc"
+# A destructive command whose targets are specific paths inside the working
+# directories is decidable, so an ordinary delete costs no classifier call even with
+# Jev on. A target outside them still reaches the classifier.
+probe delete-in-working-dir "rm -rf /tmp/permissions-probe" absent "Jev" no "" "$TMP_DIR/jev-on.jsonc"
+probe delete-outside-working-dir "rm -rf /srv/permissions-probe" any "" consulted "" "$TMP_DIR/jev-on.jsonc"
 probe destructive-jevv-off "rm -rf /tmp/permissions-probe" absent "Jev" no
 
 # Hard block: a bare-word credential pattern on a command a model will run.

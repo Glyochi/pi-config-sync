@@ -31,6 +31,7 @@ import {
 	DEFAULT_DESTRUCTIVE_FORMS,
 	DEFAULT_HARD_BLOCK_PATTERNS,
 	describeCheckDecision,
+	destructiveTargetsAreContained,
 	describeCheckFailure,
 	describeCheckJev,
 	hasDestructiveIntent,
@@ -43,6 +44,8 @@ import {
 	parseForwardedResponse,
 	modeFromEntryData,
 	PLAN_BUILD_STATE_TYPE,
+	normalizePath,
+	resolveTarget,
 	resolveDeterministic,
 	resolveMode,
 	ruleVerdict,
@@ -549,12 +552,15 @@ const on = { jev: true, yolo: false };
 const off = { jev: false, yolo: false };
 const yolo = { jev: false, yolo: true };
 
+/** The working directory the probes resolve relative targets against. */
+const CWD = "/workspace";
+
 function decideShell(command: string, switches = off, mode: Mode = "build"): Decision {
-	return resolveDeterministic({ toolName: "bash", command, mode, switches, policy: basePolicy });
+	return resolveDeterministic({ toolName: "bash", command, mode, switches, policy: basePolicy, cwd: CWD });
 }
 
 function decidePath(toolName: string, targetPath: string, switches = off, mode: Mode = "build"): Decision {
-	return resolveDeterministic({ toolName, targetPath, mode, switches, policy: basePolicy });
+	return resolveDeterministic({ toolName, targetPath, mode, switches, policy: basePolicy, cwd: CWD });
 }
 
 eq("credential command blocks", decideShell("cat ~/.git-credentials").kind, "block");
@@ -589,16 +595,57 @@ eq("a piped remote script asks with jev off too", decideShell("curl -sS https://
 eq("a destructive verdict records its reason", (decideShell("rm -rf /workspace", on) as { reason?: string }).reason, "destructive");
 eq("an interpreter verdict records its reason", (decideShell("bash -c 'x'", on) as { reason?: string }).reason, "interpreter");
 eq("an opaque verdict records its reason", (decideShell("$CMD --version", on) as { reason?: string }).reason, "opaque");
-eq("a non-shell effectful tool records the tool reason", (resolveDeterministic({ toolName: "write", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy }) as { reason?: string }).reason, "tool");
+eq("a non-shell effectful tool records the tool reason", (resolveDeterministic({ toolName: "write", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy, cwd: CWD }) as { reason?: string }).reason, "tool");
 
 // --- needsJudgement ------------------------------------------------------
 
-eq("a destructive verb needs judgement", needsJudgement("rm -rf /workspace", basePolicy), "destructive");
-eq("an interpreter payload needs judgement", needsJudgement("bash -c 'x'", basePolicy), "interpreter");
-eq("an opaque word needs judgement", needsJudgement("$CMD x", basePolicy), "opaque");
-eq("a benign chain does not need judgement", needsJudgement("npm test && npm run build", basePolicy), undefined);
-eq("a benign redirect does not need judgement", needsJudgement("cat a > /tmp/b", basePolicy), undefined);
-eq("an external-effect command does not need judgement", needsJudgement("git push origin main", basePolicy), undefined);
+eq("a destructive verb needs judgement", needsJudgement("rm -rf /workspace", basePolicy, CWD), "destructive");
+eq("an interpreter payload needs judgement", needsJudgement("bash -c 'x'", basePolicy, CWD), "interpreter");
+eq("an opaque word needs judgement", needsJudgement("$CMD x", basePolicy, CWD), "opaque");
+eq("a benign chain does not need judgement", needsJudgement("npm test && npm run build", basePolicy, CWD), undefined);
+eq("a benign redirect does not need judgement", needsJudgement("cat a > /tmp/b", basePolicy, CWD), undefined);
+eq("an external-effect command does not need judgement", needsJudgement("git push origin main", basePolicy, CWD), undefined);
+
+// --- working-directory targets -------------------------------------------
+// A destructive command is decidable when it only touches specific paths inside the
+// working directories, which is what makes an ordinary delete free.
+
+eq("a delete in /tmp is decidable", needsJudgement("rm /tmp/a.txt", basePolicy, CWD), undefined);
+eq("a delete in a subdirectory is decidable", needsJudgement("rm -rf /workspace/build", basePolicy, CWD), undefined);
+eq("a relative delete is decidable", needsJudgement("rm -rf build", basePolicy, CWD), undefined);
+eq("a relative parent path is decidable", needsJudgement("rm -rf ./build/../dist", basePolicy, CWD), undefined);
+eq("a delete outside the working directories is not", needsJudgement("rm -rf /srv/data", basePolicy, CWD), "destructive");
+eq("a delete of the working directory itself is not", needsJudgement("rm -rf /workspace", basePolicy, CWD), "destructive");
+eq("a glob delete is not decidable", needsJudgement("rm -rf /workspace/*", basePolicy, CWD), "destructive");
+eq("an escaping path is not decidable", needsJudgement("rm -rf ../other", basePolicy, CWD), "destructive");
+eq("an unresolvable target is not decidable", needsJudgement("rm -rf $DIR", basePolicy, CWD), "destructive");
+eq("a home target is not decidable", needsJudgement("rm -rf ~/x", basePolicy, CWD), "destructive");
+
+check("a delete in /tmp is contained", destructiveTargetsAreContained("rm /tmp/a.txt", basePolicy, CWD));
+check("several contained targets are fine", destructiveTargetsAreContained("rm /tmp/a /tmp/b", basePolicy, CWD));
+check("one outside target fails the whole command", !destructiveTargetsAreContained("rm /tmp/a /srv/b", basePolicy, CWD));
+check("a glob target is not contained", !destructiveTargetsAreContained("rm -rf /workspace/*", basePolicy, CWD));
+check("no targets is not contained", !destructiveTargetsAreContained("rm", basePolicy, CWD));
+
+// The reported case, end to end.
+eq("rm /tmp/a.txt is allowed with jev on", decideShell("rm /tmp/a.txt", on).kind, "allow");
+eq("rm -rf /workspace/build is allowed with jev on", decideShell("rm -rf /workspace/build", on).kind, "allow");
+eq("rm -rf build is allowed with jev on", decideShell("rm -rf build", on).kind, "allow");
+eq("rmdir /tmp/dir is allowed with jev on", decideShell("rmdir /tmp/dir", on).kind, "allow");
+eq("a glob wipe still reaches the classifier", decideShell("rm -rf /workspace/*", on).kind, "classify");
+eq("a delete outside the working directories still reaches it", decideShell("rm -rf /srv/data", on).kind, "classify");
+eq("a delete of the working directory still reaches it", decideShell("rm -rf /workspace", on).kind, "classify");
+eq("a delete in /tmp is allowed with jev off too", decideShell("rm /tmp/a.txt", off).kind, "allow");
+eq("plan mode still refuses a delete", decideShell("rm /tmp/a.txt", off, "plan").kind, "block");
+
+eq("normalizePath resolves a parent", normalizePath("/workspace/../x"), "/x");
+eq("normalizePath resolves a dot", normalizePath("/workspace/./build"), "/workspace/build");
+eq("normalizePath keeps the root", normalizePath("/"), "/");
+eq("resolveTarget resolves a relative path", resolveTarget("build", CWD), "/workspace/build");
+eq("resolveTarget resolves an absolute path", resolveTarget("/tmp/a.txt", CWD), "/tmp/a.txt");
+eq("resolveTarget resolves a parent escape", resolveTarget("../x", CWD), "/x");
+eq("resolveTarget refuses a variable", resolveTarget("$DIR", CWD), undefined);
+eq("resolveTarget refuses home", resolveTarget("~/x", CWD), undefined);
 
 check("a variable command word is opaque", hasOpaqueCommandWord("$CMD --version"));
 check("a substitution command word is opaque", hasOpaqueCommandWord("$(which rm) -rf x"));
@@ -609,15 +656,15 @@ check("an interpreter payload is detected", hasInterpreterPayload("bash -c 'x'")
 check("a plain command has no interpreter payload", !hasInterpreterPayload("bash script.sh"));
 eq("an assignment prefix is skipped when finding the command word", commandWordOf("FOO=bar ls"), "ls");
 eq("a bare assignment has no command word", commandWordOf("FOO=bar"), undefined);
-eq("write is classified with jev on", resolveDeterministic({ toolName: "write", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy }).kind, "classify");
-eq("edit is classified with jev on", resolveDeterministic({ toolName: "edit", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy }).kind, "classify");
-eq("read is never classified", resolveDeterministic({ toolName: "read", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy }).kind, "allow");
-eq("mcp is classified with jev on", resolveDeterministic({ toolName: "mcp__x__y", mode: "build", switches: on, policy: basePolicy }).kind, "classify");
-eq("a plan tool is never classified", resolveDeterministic({ toolName: "plan_task", mode: "build", switches: on, policy: basePolicy }).kind, "allow");
+eq("write is classified with jev on", resolveDeterministic({ toolName: "write", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy, cwd: CWD }).kind, "classify");
+eq("edit is classified with jev on", resolveDeterministic({ toolName: "edit", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy, cwd: CWD }).kind, "classify");
+eq("read is never classified", resolveDeterministic({ toolName: "read", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy, cwd: CWD }).kind, "allow");
+eq("mcp is classified with jev on", resolveDeterministic({ toolName: "mcp__x__y", mode: "build", switches: on, policy: basePolicy, cwd: CWD }).kind, "classify");
+eq("a plan tool is never classified", resolveDeterministic({ toolName: "plan_task", mode: "build", switches: on, policy: basePolicy, cwd: CWD }).kind, "allow");
 
 eq("plan mode blocks a shell mutation", decideShell("rm -rf /workspace/build", off, "plan").kind, "block");
 eq("plan mode blocks a compound shell command", decideShell("ls && rm -rf build", off, "plan").kind, "block");
-eq("plan mode blocks effectful mcp", resolveDeterministic({ toolName: "mcp__x__y", mode: "plan", switches: off, policy: basePolicy }).kind, "block");
+eq("plan mode blocks effectful mcp", resolveDeterministic({ toolName: "mcp__x__y", mode: "plan", switches: off, policy: basePolicy, cwd: CWD }).kind, "block");
 eq("plan mode still allows a read tool", decidePath("read", "/workspace/x", off, "plan").kind, "allow");
 eq("plan mode allows a read-only shell command", decideShell("ls -la /workspace", off, "plan").kind, "allow");
 eq("plan mode allows a read-only chain", decideShell("git status && git diff", off, "plan").kind, "allow");

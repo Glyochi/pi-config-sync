@@ -1194,6 +1194,83 @@ export function hasOpaqueCommandWord(command: string): boolean {
 
 export type JudgementReason = "destructive" | "interpreter" | "opaque";
 
+/** A glob character in an unquoted target, so the target is not a specific path. */
+const GLOB_CHARACTERS = /[*?[]/;
+
+/** Resolve `.` and `..` segments textually, so containment can be checked. */
+export function normalizePath(path: string): string {
+	const parts: string[] = [];
+	for (const part of path.split("/")) {
+		if (part === "" || part === ".") continue;
+		if (part === "..") {
+			parts.pop();
+			continue;
+		}
+		parts.push(part);
+	}
+	return `/${parts.join("/")}`;
+}
+
+/**
+ * Resolve one shell target against the working directory. Returns `undefined` when it
+ * cannot be resolved to a literal path, which keeps the classifier in the loop.
+ */
+export function resolveTarget(raw: string, cwd: string): string | undefined {
+	const token = cleanToken(raw);
+	if (token === "") return undefined;
+	// Substitutions and variables are opaque, and `~` is a catastrophic path the gate
+	// already blocks, so neither is a plain working-directory target.
+	if (token.startsWith("$") || token.startsWith("`") || token.startsWith("~")) return undefined;
+	if (token.startsWith("/")) return normalizePath(token);
+	return normalizePath(`${cwd}/${token}`);
+}
+
+/** The arguments of every destructive segment, i.e. the tokens after its command word. */
+function destructiveArguments(command: string): string[] {
+	const args: string[] = [];
+	for (const segment of command.split(SEGMENT_SEPARATOR)) {
+		const trimmed = segment.trim();
+		if (trimmed === "") continue;
+		const tokens = trimmed.split(/\s+/).filter((token) => token !== "");
+		let index = 0;
+		while (index < tokens.length) {
+			const token = tokens[index] as string;
+			if (COMMAND_WRAPPERS.has(bareName(token)) || looksLikeAssignment(token)) {
+				index += 1;
+				while (index < tokens.length && looksLikeFlagOrAssignment(tokens[index] as string)) index += 1;
+				continue;
+			}
+			break;
+		}
+		args.push(...tokens.slice(index + 1));
+	}
+	return args;
+}
+
+function isStrictlyInside(path: string, directory: string): boolean {
+	const normalized = directory.replace(/\/+$/, "");
+	if (normalized === "") return path !== "/";
+	return path.startsWith(`${normalized}/`);
+}
+
+/**
+ * Whether a destructive command only touches specific paths inside the working
+ * directories, which is what makes a delete decidable without the classifier.
+ *
+ * A glob target (`rm -rf /workspace/*`) is not specific, and neither is a working
+ * directory itself (`rm -rf /workspace`), so both still reach the classifier.
+ */
+export function destructiveTargetsAreContained(command: string, policy: PermissionsConfig, cwd: string): boolean {
+	const targets = destructiveArguments(command).filter((token) => !token.startsWith("-"));
+	if (targets.length === 0) return false;
+	return targets.every((token) => {
+		const resolved = resolveTarget(token, cwd);
+		if (resolved === undefined) return false;
+		if (GLOB_CHARACTERS.test(resolved)) return false;
+		return policy.workingDirectories.some((directory) => isStrictlyInside(resolved, directory));
+	});
+}
+
 /**
  * Why a shell command needs the classifier, or `undefined` when it does not.
  *
@@ -1202,8 +1279,12 @@ export type JudgementReason = "destructive" | "interpreter" | "opaque";
  * cannot read is hidden intent — a destructive verb, an interpreter payload, or a
  * command word that is a variable or substitution.
  */
-export function needsJudgement(command: string, policy: PermissionsConfig): JudgementReason | undefined {
-	if (hasDestructiveIntent(command, policy)) return "destructive";
+export function needsJudgement(command: string, policy: PermissionsConfig, cwd: string): JudgementReason | undefined {
+	// A destructive command is decidable when it only touches specific paths inside the
+	// working directories, which is what makes `rm /tmp/a.txt` and `rm -rf build` free.
+	if (hasDestructiveIntent(command, policy) && !destructiveTargetsAreContained(command, policy, cwd)) {
+		return "destructive";
+	}
 	if (hasInterpreterPayload(command)) return "interpreter";
 	if (hasOpaqueCommandWord(command)) return "opaque";
 	return undefined;
@@ -1237,6 +1318,8 @@ export interface DeterministicInput {
 	mode: Mode;
 	switches: SwitchState;
 	policy: PermissionsConfig;
+	/** The working directory, for resolving relative shell targets. */
+	cwd: string;
 	/** The shell command, for bash and powershell. */
 	command?: string | undefined;
 	/** The target path, for the path-bearing file tools. */
@@ -1303,7 +1386,7 @@ export function resolveDeterministic(input: DeterministicInput): Decision {
 			// A read-only chain is free, and so is a command whose intent a glob can read.
 			if (input.command === undefined) return { kind: "allow" };
 			if (isReadOnlyChain(input.command)) return { kind: "allow" };
-			const reason = needsJudgement(input.command, policy);
+			const reason = needsJudgement(input.command, policy, input.cwd);
 			if (reason === undefined) return { kind: "allow" };
 			return { kind: "classify", reason };
 		}
@@ -1318,6 +1401,7 @@ export function resolveDeterministic(input: DeterministicInput): Decision {
 export interface JevPayloadInput {
 	toolName: string;
 	mode: Mode;
+	cwd?: string | undefined;
 	command?: string | undefined;
 	targetPath?: string | undefined;
 	preview?: string | undefined;
@@ -1379,6 +1463,7 @@ export function buildJevPayload(input: JevPayloadInput): Record<string, unknown>
 	return {
 		tool: input.toolName,
 		mode: input.mode,
+		...(input.cwd === undefined ? {} : { cwd: input.cwd }),
 		...(input.command === undefined ? {} : { command: capText(input.command, input.maxCommandChars) }),
 		...(input.targetPath === undefined ? {} : { targetPath: input.targetPath }),
 		...(input.preview === undefined ? {} : { preview: capText(input.preview, input.maxPreviewChars) }),
