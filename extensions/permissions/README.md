@@ -38,8 +38,15 @@ per session with `/permissions jev on`. YOLO defaults off too, and with it on th
 floor at all.
 
 The footer carries the indicator on its status line, below the stats line:
-`jev off · yolo off`, in the warning colour while YOLO is on, and `permissions off` when
-the gate is disabled. Other extensions share that line.
+`jev on · yolo off · thr 0.30 · jev-1.13`, gaining ` · N reqs` once Jev has classified
+something (cache hits are not classifications). Only `jev on` (warning colour) and
+`yolo on` (error colour) are coloured, and it reads `permissions off` when the gate is
+disabled. Other extensions share that line.
+
+`/permissions threshold <0..1>` changes the confidence threshold for the session only —
+nothing is written, so `/permissions reload` restores the file's value. `/permissions
+status` reports the threshold, the model, the call count, and the counters: the raw
+verdict crossed with the confidence side, so `high + low` is the call total.
 
 ## Running the tests
 
@@ -94,8 +101,9 @@ python3 ~/.pi/agent/extensions/permissions/tests/commands.py
 ```
 
 It starts `pi --mode rpc`, sends each `/permissions` subcommand as a prompt, and asserts
-on the notification the handler sends back — 15 cases covering `status`, `mode`, the
-switches, every `check` shape, and the usage line.
+on the notifications the handler sends back — 18 cases covering `status`, `mode`, the
+switches, the `threshold` command, every `check` shape, and the usage line. `status`
+emits two notifications (the status line and the counter line), which the harness knows.
 
 ## What the engine decides
 
@@ -115,7 +123,9 @@ deterministic layers still applying to them. Plan tools are neutral.
   Structure is not a reason: the globs match the whole string, so a chained
   external-effect command is decided without the classifier, and benign chains stay
   free. A verdict below `jev.confidenceThreshold` (default `0.3`) is not trusted and
-  becomes an ask, so it runs under YOLO and prompts without it.
+  becomes an ask, so it runs under YOLO and prompts without it. `/permissions threshold`
+  moves that line for the session; the footer shows the threshold in force, and the
+  counters in `/permissions status` split each raw verdict by the side it landed on.
 - **Working-directory deletes are decidable.** `rm /tmp/a.txt`, `rm -rf
   /workspace/build`, and `rm -rf build` touch specific paths inside the working
   directories, so they are allowed without a classifier call even with Jev on. A glob
@@ -131,8 +141,10 @@ decision, source, reason), which is denylisted from pi-config-sync.
 
 ## Checks that need a human
 
-- `/permissions status` shows the mode, both switches, the resulting behaviour, and
-  `config=loaded`.
+- `/permissions status` shows the mode, both switches, the resulting behaviour,
+  `threshold=`, `model=`, `calls=`, the counter line, and `config=loaded`.
+- `/permissions threshold 0.9`, then a command Jev rates below 0.9 prompts with the
+  unsure framing; `/permissions threshold 0.3` and the same command is trusted again.
 - `/permissions jev on`, then a compound command runs and the footer or `/session` shows
   a `Tools/summaries` cost for it; `/permissions jev off` and the next one adds none.
 - `/permissions yolo on`, then a credential read succeeds — expected, and the point of

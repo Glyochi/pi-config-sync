@@ -99,10 +99,15 @@ run under YOLO and prompt without it.
 
 ## The footer indicator
 
-The two switches show on the footer's status line, below the stats line: `jev off · yolo
-off`, coloured with the warning colour while YOLO is on, since that is the state with no
-floor. It reads `permissions off` when the gate is disabled, because reporting switch
-values for a gate that is not running would mislead.
+The status line, below the stats line, reads `jev on · yolo off · thr 0.30 · jev-1.13`:
+the two switches, the confidence threshold in force, and the classifier id. Once Jev has
+classified something it gains ` · N reqs`, the number of classifications this session.
+Cache hits are not classifications, so they do not count.
+
+Only `jev on` is coloured, in the warning colour, and only `yolo on`, in the error
+colour; nothing else is coloured and the line is never coloured as a whole. It reads
+`permissions off` when the gate is disabled, because reporting switch values for a gate
+that is not running would mislead.
 
 It is one line rather than inline with the cwd: a replaced footer cannot reproduce the
 `xp`, `(sub)`, routed-model and `(auto)` markers, which are not reachable from an
@@ -111,12 +116,18 @@ extension. Other extensions share that line and it is sorted by key, so `git-syn
 
 ## Asking at runtime
 
-- `/permissions status` — the mode, both switches, and the resulting behaviour.
+- `/permissions status` — the mode, both switches, the resulting behaviour, the
+  threshold, the model, the call count, and a second line spelling the counters out:
+  `counters: allow 2 high, 0 low · ask 1 high, 1 low · deny 0 high, 2 low`. The raw
+  verdict is crossed with the confidence side, so `high + low` is the call total.
 - `/permissions check <tool> <command-or-path>` — a faithful trace: it consults the
   classifier only when the pipeline would, and prints one line per check. Quote a
   command that contains spaces (`check bash "rm -rf /srv/data"`); one pair of
   surrounding quotes is stripped before the engine sees it.
 - `/permissions jev on|off`, `/permissions yolo on|off` — the switches.
+- `/permissions threshold <0..1>` — set the confidence threshold for this session only;
+  bare, it reports the current value. Nothing is written to the file, so a value outside
+  0..1 is rejected with a warning and `/permissions reload` restores the file's value.
 - `/permissions reload` — re-read `permissions.jsonc`.
 
 ## Where each behaviour is configured
@@ -130,7 +141,7 @@ extension. Other extensions share that line and it is sorted by key, so `git-syn
 | External-effect asks, pipe-to-shell | `bash` |
 | Plan mode behaviour | `modes.plan.mutations` |
 | The switches' defaults | `jev.enabled`, `yolo` |
-| How much a verdict is trusted | `jev.confidenceThreshold` |
+| How much a verdict is trusted | `jev.confidenceThreshold` (or `/permissions threshold` for one session) |
 | Doom loop | `doomLoop.threshold`, `doomLoop.state` |
 | What Jev is asked | `rules.instructions`, `rules.criteria`, `rules.environment` |
 | The audit log | `audit.enabled` |
