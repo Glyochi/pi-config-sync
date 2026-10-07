@@ -11,7 +11,7 @@
 
   // Classifier model. "jev-1.13" is the paid model (about $0.042 per 1M input
   // tokens); "jev-1.13-free" is the free tier.
-  "model": { "provider": "opencode", "id": "jev-1.13" },
+  "model": { "provider": "opencode", "id": "jev-1.13-free" },
 
   // Hard deadline for one classify call. A timeout fails open (see below).
   "timeoutMs": 10000,

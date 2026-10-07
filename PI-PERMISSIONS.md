@@ -149,6 +149,20 @@ Fail-open is deliberate. `pi-permission-system`'s file-tool rules remain in forc
 and the credential hard block is deterministic and unaffected by the breaker, so a
 classifier outage degrades the gate rather than stopping work.
 
+## Cost
+
+`classify()` reports usage, and a `tool_result` handler attaches it to the bash
+tool result, combined with any usage the tool itself reported. An executed
+command's classifier cost therefore lands in the session totals under
+`Tools/summaries` in the footer and `/session`. Measured at about $0.00004 per
+command at `jev-1.13` pricing.
+
+Blocked calls never produce a tool result, so their classifier cost stays
+uncounted: a hard block, a no-UI `ask`/`deny`, an `ask`/`deny` you reject, and
+`/bash-safety check` all spend a call that the totals do not show. The pending
+usage map is bounded at 64 entries and cleared each session, because those
+entries never get a result to consume them.
+
 ## No UI, and subagents
 
 In `print`/`json` mode and inside subagents there is no way to prompt, so `ask`
