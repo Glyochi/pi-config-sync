@@ -1108,7 +1108,10 @@ export function resolveDeterministic(input: DeterministicInput): Decision {
 
 	if (mode === "plan" && (isShellTool(toolName) || isMcpTool(toolName))) {
 		const state = policy.modes.plan.mutations;
-		if (state !== "allow") {
+		// Reads stay allowed: a read-only chain can only look at things, and blocking
+		// it would make Plan mode useless for inspecting the repo.
+		const readOnlyShell = isShellTool(toolName) && input.command !== undefined && isReadOnlyChain(input.command);
+		if (state !== "allow" && !readOnlyShell) {
 			const reason = `permissions: '${toolName}' can mutate state, and Plan mode is read-only. Switch to Build mode to run it.`;
 			return state === "deny" ? { kind: "block", reason } : { kind: "ask", reason };
 		}

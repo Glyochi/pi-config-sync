@@ -508,7 +508,11 @@ eq("a plan tool is never classified", resolveDeterministic({ toolName: "plan_tas
 eq("plan mode blocks a shell mutation", decideShell("rm -rf /workspace/build", off, "plan").kind, "block");
 eq("plan mode blocks a compound shell command", decideShell("ls && rm -rf build", off, "plan").kind, "block");
 eq("plan mode blocks effectful mcp", resolveDeterministic({ toolName: "mcp__x__y", mode: "plan", switches: off, policy: basePolicy }).kind, "block");
-eq("plan mode still allows a read", decidePath("read", "/workspace/x", off, "plan").kind, "allow");
+eq("plan mode still allows a read tool", decidePath("read", "/workspace/x", off, "plan").kind, "allow");
+eq("plan mode allows a read-only shell command", decideShell("ls -la /workspace", off, "plan").kind, "allow");
+eq("plan mode allows a read-only chain", decideShell("git status && git diff", off, "plan").kind, "allow");
+eq("plan mode blocks a redirect in plan mode", decideShell("ls > /tmp/out.txt", off, "plan").kind, "block");
+eq("plan mode blocks an unknown command", decideShell("npm run deploy", off, "plan").kind, "block");
 eq("build mode allows a shell mutation", decideShell("rm -rf /workspace/build", off, "build").kind, "allow");
 
 eq("yolo allows a credential command", decideShell("cat ~/.git-credentials", yolo).kind, "allow");
