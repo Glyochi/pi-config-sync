@@ -48,6 +48,7 @@ proc = subprocess.Popen(
 )
 
 notifications: list[str] = []
+statuses: list[tuple[str, str]] = []
 responses: dict[str, dict] = {}
 lock = threading.Lock()
 
@@ -64,6 +65,9 @@ def reader() -> None:
         if record.get("type") == "extension_ui_request" and record.get("method") == "notify":
             with lock:
                 notifications.append(record.get("message", ""))
+        elif record.get("type") == "extension_ui_request" and record.get("method") == "setStatus":
+            with lock:
+                statuses.append((record.get("statusKey", ""), record.get("statusText", "")))
         elif record.get("type") == "response":
             with lock:
                 responses[record.get("id", "")] = record
@@ -90,6 +94,7 @@ except subprocess.TimeoutExpired:
 
 with lock:
     collected = list(notifications)
+    indicator_updates = list(statuses)
     answered = dict(responses)
 
 failures: list[str] = []
@@ -105,8 +110,26 @@ for index, (label, _, expected, forbidden) in enumerate(CASES):
     if forbidden is not None and forbidden in note:
         failures.append(f'{label}: did not expect "{forbidden}" in "{note[:120]}"')
 
+# The footer indicator: one setStatus key, updated on every switch flip.
+if not indicator_updates:
+    failures.append("no setStatus request was emitted for the footer indicator")
+else:
+    keys = {key for key, _ in indicator_updates}
+    if keys != {"permissions"}:
+        failures.append(f"unexpected status keys: {sorted(keys)}")
+    texts = [text for _, text in indicator_updates]
+    if texts[-1] != "jev off · yolo off":
+        failures.append(f'expected the final indicator to read "jev off · yolo off", got "{texts[-1]}"')
+    if not any("jev on" in text for text in texts):
+        failures.append("no indicator update reported jev on")
+    if not any("yolo on" in text for text in texts):
+        failures.append("no indicator update reported yolo on")
+
 for note in collected:
     print(f"- {note}")
+print()
+for key, text in indicator_updates:
+    print(f"[footer {key}] {text}")
 
 print()
 if failures:

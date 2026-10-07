@@ -45,6 +45,7 @@ import {
 	needsJudgement,
 	modeFromEntries,
 	parseForwardedResponse,
+	permissionIndicator,
 	modeFromEntryData,
 	PLAN_BUILD_STATE_TYPE,
 	normalizePath,
@@ -440,6 +441,16 @@ eq("command word strips a path prefix", commandWordOf("/usr/bin/chmod 777 /tmp")
 eq("plain command word", commandWordOf("ls -la"), "ls");
 // Documented limitation: a wrapper's value-taking flag hides the real command.
 eq("wrapper flag hides the command", commandWordOf("sudo -u root chmod 000 /etc/passwd"), "root");
+
+// --- footer indicator -----------------------------------------------------
+// The two switches, or that the gate is off. A disabled gate must not report switch
+// values, which would describe a gate that is not running.
+
+eq("the indicator shows both switches", permissionIndicator({ enabled: true, jev: true, yolo: false }).text, "jev on · yolo off");
+eq("both switches off reads plainly", permissionIndicator({ enabled: true, jev: false, yolo: false }).text, "jev off · yolo off");
+eq("the indicator warns under yolo", permissionIndicator({ enabled: true, jev: false, yolo: true }).warn, true);
+eq("the indicator does not warn otherwise", permissionIndicator({ enabled: true, jev: true, yolo: false }).warn, false);
+eq("a disabled gate says so", permissionIndicator({ enabled: false, jev: true, yolo: true }), { text: "permissions off", warn: false });
 
 // --- check reporting ------------------------------------------------------
 // The property that matters: a line for a command the pipeline does not classify must

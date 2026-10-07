@@ -41,6 +41,7 @@ import {
 	modeFromEntries,
 	normalizeConfig,
 	PARENT_SESSION_ENV_KEY,
+	permissionIndicator,
 	parseJsonc,
 	parseForwardedResponse,
 	PLAN_BUILD_STATE_TYPE,
@@ -241,11 +242,29 @@ function resetState(ctx: ExtensionContext, pi: ExtensionAPI): State {
 		leafId: null,
 	};
 	state = next;
+	syncStatus(ctx, next);
 	return next;
 }
 
 function ensureState(ctx: ExtensionContext, pi: ExtensionAPI): State {
 	return state ?? resetState(ctx, pi);
+}
+
+/**
+ * The footer indicator, on the built-in footer's extension status line. Guarded like
+ * `notify`, so a non-UI mode is a no-op.
+ */
+function syncStatus(ctx: ExtensionContext, current: State): void {
+	try {
+		const indicator = permissionIndicator({
+			enabled: current.config.enabled,
+			jev: current.switches.jev,
+			yolo: current.switches.yolo,
+		});
+		ctx.ui.setStatus("permissions", indicator.warn ? ctx.ui.theme.fg("warning", indicator.text) : indicator.text);
+	} catch {
+		// No UI in this mode.
+	}
 }
 
 /**
@@ -701,6 +720,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					const mode = rest.toLowerCase();
 					const next = mode === "on" ? true : mode === "off" ? false : !current.switches[sub];
 					current.switches[sub] = next;
+					syncStatus(ctx, current);
 					notify(
 						ctx,
 						`permissions: ${sub} ${next ? "on" : "off"} — ${statusLine(current)}`,

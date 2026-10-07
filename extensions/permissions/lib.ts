@@ -869,6 +869,27 @@ export function confirmMessage(
 	return body.join("\n\n");
 }
 
+// --- footer indicator -----------------------------------------------------
+
+export interface PermissionIndicator {
+	text: string;
+	/** True in the state with no floor, so the caller can colour the line. */
+	warn: boolean;
+}
+
+/**
+ * The compact footer indicator: the two switches, or that the gate is off. A disabled
+ * gate says so rather than showing switch values, which would describe a gate that is
+ * not running.
+ */
+export function permissionIndicator(input: { enabled: boolean; jev: boolean; yolo: boolean }): PermissionIndicator {
+	if (!input.enabled) return { text: "permissions off", warn: false };
+	return {
+		text: `jev ${input.jev ? "on" : "off"} · yolo ${input.yolo ? "on" : "off"}`,
+		warn: input.yolo,
+	};
+}
+
 // --- check reporting ------------------------------------------------------
 // `/permissions check` reads as a faithful trace of the pipeline. It never consults the
 // classifier for a command the pipeline would not, and it never presents an opinion as
