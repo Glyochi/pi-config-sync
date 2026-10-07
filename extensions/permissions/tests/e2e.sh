@@ -110,6 +110,17 @@ check() {
 		FAILED=$((FAILED + 1))
 		return
 	fi
+	# A classifier call shows up either as usage on the result, when the action ran,
+	# or as a Jev block reason, when it did not. A blocked call never reaches
+	# tool_result, so its cost is deliberately uncounted.
+	if [[ "$wantCost" == "consulted" ]]; then
+		if ! has_cost "$out" && [[ "$result" != *"Jev"* ]]; then
+			echo "FAIL  (the classifier does not appear to have run; transcript: $out)"
+			echo "        got: $(printf '%s' "$result" | head -c 200)"
+			FAILED=$((FAILED + 1))
+			return
+		fi
+	fi
 	if [[ "$wantCost" == "yes" ]] && ! has_cost "$out"; then
 		echo "FAIL  (expected the classifier to run; no usage on the result)"
 		FAILED=$((FAILED + 1))
@@ -149,8 +160,8 @@ probe compound-jevv-off "echo a && echo b" present "b" no
 probe compound-jevv-on "echo a && echo b" present "b" yes "" "$TMP_DIR/jev-on.jsonc"
 # A destructive verb is one command, but a glob cannot judge it, so it is classified
 # too. This is the gap the `check` report exposed.
-probe destructive-jevv-on "rm -rf /tmp/permissions-probe" present "permissions" yes "" "$TMP_DIR/jev-on.jsonc"
-probe destructive-jevv-off "rm -rf /tmp/permissions-probe" absent "permissions" no
+probe destructive-jevv-on "rm -rf /tmp/permissions-probe" any "" consulted "" "$TMP_DIR/jev-on.jsonc"
+probe destructive-jevv-off "rm -rf /tmp/permissions-probe" absent "Jev" no
 
 # Hard block: a bare-word credential pattern on a command a model will run.
 # `echo token` is deliberately innocuous, because anything that looks like a real
