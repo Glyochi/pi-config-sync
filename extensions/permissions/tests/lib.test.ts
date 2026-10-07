@@ -27,7 +27,10 @@ import {
 	DEFAULT_CATASTROPHE_PATHS,
 	DEFAULT_CONFIG,
 	DEFAULT_CRITERIA,
+	DEFAULT_DESTRUCTIVE_COMMANDS,
+	DEFAULT_DESTRUCTIVE_FORMS,
 	DEFAULT_HARD_BLOCK_PATTERNS,
+	hasDestructiveIntent,
 	forwardingPaths,
 	isSubagentEnv,
 	modeFromEntries,
@@ -442,6 +445,8 @@ eq("config catastrophe commands match the defaults", safetyConfig.catastrophe.co
 eq("config catastrophe forms match the defaults", safetyConfig.catastrophe.forms, DEFAULT_CATASTROPHE_FORMS);
 eq("config hard-block patterns match the defaults", safetyConfig.hardBlock.patterns, DEFAULT_HARD_BLOCK_PATTERNS);
 eq("config bash rules match the defaults", safetyConfig.bash, DEFAULT_BASH_RULES);
+eq("config destructive commands match the defaults", safetyConfig.destructive.commands, DEFAULT_DESTRUCTIVE_COMMANDS);
+eq("config destructive forms match the defaults", safetyConfig.destructive.forms, DEFAULT_DESTRUCTIVE_FORMS);
 check("declarative policy asks on git push", (policy.bash ?? {})["* git push*"] === "ask");
 check("declarative policy asks on sudo", (policy.bash ?? {})["* sudo *"] === "ask");
 // Credential and catastrophe denies are no longer bash globs; they are the hard
@@ -520,6 +525,31 @@ eq("yolo allows a catastrophe", decideShell("rm -rf /usr/share/x", yolo).kind, "
 eq("yolo allows a plan-mode mutation", decideShell("rm -rf /workspace/build", yolo, "plan").kind, "allow");
 eq("yolo allows a credential path read", decidePath("read", "/home/dev/.git-credentials", yolo).kind, "allow");
 eq("yolo ignores an external-effect ask", decideShell("git push origin main", yolo).kind, "allow");
+
+// --- destructive intent --------------------------------------------------
+// A destructive verb is one command a glob cannot judge, so it reaches Jev rather
+// than being allowed outright.
+
+check("rm is destructive", hasDestructiveIntent("rm -rf /workspace", basePolicy));
+check("chmod is destructive", hasDestructiveIntent("chmod -R 000 /workspace", basePolicy));
+check("a destructive verb in a chain is found", hasDestructiveIntent("cd /workspace && rm -rf build", basePolicy));
+check("find -delete is destructive", hasDestructiveIntent("find /workspace -name '*.o' -delete", basePolicy));
+check("sed -i is destructive", hasDestructiveIntent("sed -i s/a/b/ file", basePolicy));
+check("mv is destructive", hasDestructiveIntent("mv /workspace/a /tmp/b", basePolicy));
+check("ls is not destructive", !hasDestructiveIntent("ls -la /workspace", basePolicy));
+check("npm test is not destructive", !hasDestructiveIntent("npm test", basePolicy));
+check("sed -n is not destructive", !hasDestructiveIntent("sed -n 1p file", basePolicy));
+check("find without -delete is not destructive", !hasDestructiveIntent("find /workspace -name '*.o'", basePolicy));
+check("an empty command is not destructive", !hasDestructiveIntent("   ", basePolicy));
+
+// The reported gap: these were allowed outright because they are single commands.
+eq("a destructive single command is classified", decideShell("rm -rf /workspace/*", on).kind, "classify");
+eq("a destructive chmod is classified", decideShell("chmod -R 000 /workspace", on).kind, "classify");
+eq("a destructive find is classified", decideShell("find /workspace -name '*.o' -delete", on).kind, "classify");
+eq("a benign single command is still free", decideShell("ls -la /workspace", on).kind, "allow");
+eq("a read-only chain is still free", decideShell("git status && git diff", on).kind, "allow");
+eq("a benign non-destructive command is still free", decideShell("npm test", on).kind, "allow");
+eq("with jev off a destructive command is unchanged", decideShell("rm -rf /workspace/*", off).kind, "allow");
 
 // --- modes ---------------------------------------------------------------
 

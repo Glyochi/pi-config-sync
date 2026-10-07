@@ -46,6 +46,11 @@ export interface PermissionsConfig {
 	workingDirectories: string[];
 	/** Declarative bash globs, matched whole-string with last-match-wins. */
 	bash: Record<string, RuleState>;
+	/**
+	 * Commands and forms that change what they touch, so a glob cannot judge them and
+	 * even a single one goes to Jev rather than being allowed outright.
+	 */
+	destructive: { commands: string[]; forms: string[] };
 	/** Repeated identical calls, which is what `special.doom_loop` covered before. */
 	doomLoop: { threshold: number; state: RuleState };
 	audit: { enabled: boolean };
@@ -226,6 +231,36 @@ export const DEFAULT_BASH_RULES: Record<string, RuleState> = {
 	"* sudo *": "ask",
 };
 
+/**
+ * Command words that modify whatever they are given. A single one of these is not
+ * decidable by a glob, so it reaches Jev instead of being allowed outright.
+ */
+export const DEFAULT_DESTRUCTIVE_COMMANDS: string[] = [
+	"rm",
+	"rmdir",
+	"unlink",
+	"shred",
+	"truncate",
+	"mv",
+	"cp",
+	"chmod",
+	"chown",
+	"chgrp",
+	"chattr",
+	"ln",
+	"install",
+	"tee",
+	"dd",
+	"mkfs",
+	"wipefs",
+	"mount",
+	"umount",
+	"blkdiscard",
+];
+
+/** Flag forms that are destructive wherever they appear, as in `find … -delete`. */
+export const DEFAULT_DESTRUCTIVE_FORMS: string[] = ["sed -i", "-delete", "-exec", "--delete", "of="];
+
 export const DEFAULT_CONFIG: PermissionsConfig = {
 	enabled: true,
 	jev: {
@@ -249,6 +284,7 @@ export const DEFAULT_CONFIG: PermissionsConfig = {
 		forms: DEFAULT_CATASTROPHE_FORMS,
 	},
 	bash: DEFAULT_BASH_RULES,
+	destructive: { commands: DEFAULT_DESTRUCTIVE_COMMANDS, forms: DEFAULT_DESTRUCTIVE_FORMS },
 	doomLoop: { threshold: 3, state: "ask" },
 	audit: { enabled: true },
 	rules: {
@@ -376,6 +412,7 @@ export function normalizeConfig(raw: unknown): PermissionsConfig {
 	const fileTools = isRecord(raw.fileTools) ? raw.fileTools : {};
 	const audit = isRecord(raw.audit) ? raw.audit : {};
 	const doomLoop = isRecord(raw.doomLoop) ? raw.doomLoop : {};
+	const destructive = isRecord(raw.destructive) ? raw.destructive : {};
 	const catastrophe = isRecord(raw.catastrophe) ? raw.catastrophe : {};
 	const rules = isRecord(raw.rules) ? raw.rules : {};
 	const criteria = isRecord(rules.criteria) ? rules.criteria : {};
@@ -406,6 +443,10 @@ export function normalizeConfig(raw: unknown): PermissionsConfig {
 		},
 		fileTools: { credential: asRuleState(fileTools.credential, DEFAULT_CONFIG.fileTools.credential) },
 		bash: asRuleMap(raw.bash, DEFAULT_BASH_RULES),
+		destructive: {
+			commands: asStringArray(destructive.commands, DEFAULT_DESTRUCTIVE_COMMANDS),
+			forms: asStringArray(destructive.forms, DEFAULT_DESTRUCTIVE_FORMS),
+		},
 		doomLoop: {
 			threshold: asNumber(doomLoop.threshold, DEFAULT_CONFIG.doomLoop.threshold, 2),
 			state: asRuleState(doomLoop.state, DEFAULT_CONFIG.doomLoop.state),
@@ -1049,6 +1090,27 @@ export function matchesGlob(glob: string, value: string): boolean {
 	return new RegExp(`^${escaped}$`).test(value);
 }
 
+/**
+ * Whether any segment of the command changes what it touches: a destructive command
+ * word, or a destructive flag form the word alone cannot see.
+ */
+export function hasDestructiveIntent(command: string, policy: PermissionsConfig): boolean {
+	if (typeof command !== "string" || command.trim() === "") return false;
+	for (const segment of command.split(SEGMENT_SEPARATOR)) {
+		const trimmed = segment.trim();
+		if (trimmed === "") continue;
+		const word = commandWordOf(trimmed);
+		if (
+			word !== undefined &&
+			policy.destructive.commands.some((entry) => entry !== "" && (word === entry || word.startsWith(`${entry}.`)))
+		) {
+			return true;
+		}
+		if (policy.destructive.forms.some((form) => form !== "" && trimmed.includes(form))) return true;
+	}
+	return false;
+}
+
 /** Last-match-wins over an ordered rule map. */
 export function ruleVerdict(rules: Record<string, RuleState>, value: string): RuleState {
 	let verdict: RuleState = "allow";
@@ -1137,11 +1199,15 @@ export function resolveDeterministic(input: DeterministicInput): Decision {
 
 	if (category === "effectful" && switches.jev) {
 		if (isShellTool(toolName)) {
-			// A single command with no shell syntax, and a read-only chain, were already
-			// decided by the globs above, so they cost no classifier call.
+			// A read-only chain is free, and so is a single command that changes nothing.
+			// A compound or interpreter command needs judgement because a glob cannot read
+			// it, and so does a destructive verb: `rm -rf /workspace` is one command, but no
+			// glob can say whether it fits the task.
 			if (input.command === undefined) return { kind: "allow" };
-			if (!isCompoundOrInterpreter(input.command)) return { kind: "allow" };
 			if (isReadOnlyChain(input.command)) return { kind: "allow" };
+			if (!isCompoundOrInterpreter(input.command) && !hasDestructiveIntent(input.command, policy)) {
+				return { kind: "allow" };
+			}
 		}
 		return { kind: "classify" };
 	}

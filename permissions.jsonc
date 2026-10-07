@@ -149,6 +149,35 @@
     "* sudo *": "ask"
   },
 
+  // Command words that change what they touch. A single one of these is not decidable
+  // by a glob, so it reaches Jev rather than being allowed outright. `forms` covers the
+  // flag-shaped cases the command word alone cannot see.
+  "destructive": {
+    "commands": [
+      "rm",
+      "rmdir",
+      "unlink",
+      "shred",
+      "truncate",
+      "mv",
+      "cp",
+      "chmod",
+      "chown",
+      "chgrp",
+      "chattr",
+      "ln",
+      "install",
+      "tee",
+      "dd",
+      "mkfs",
+      "wipefs",
+      "mount",
+      "umount",
+      "blkdiscard"
+    ],
+    "forms": ["sed -i", "-delete", "-exec", "--delete", "of="]
+  },
+
   // Repeated identical calls, which is what `special.doom_loop` covered before. The
   // third call with the same tool and arguments in one session asks before running.
   "doomLoop": { "threshold": 3, "state": "ask" },

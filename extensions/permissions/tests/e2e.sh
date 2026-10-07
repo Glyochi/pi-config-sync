@@ -147,6 +147,10 @@ echo
 probe simple-not-classified "echo probe-ok" present "probe-ok" no
 probe compound-jevv-off "echo a && echo b" present "b" no
 probe compound-jevv-on "echo a && echo b" present "b" yes "" "$TMP_DIR/jev-on.jsonc"
+# A destructive verb is one command, but a glob cannot judge it, so it is classified
+# too. This is the gap the `check` report exposed.
+probe destructive-jevv-on "rm -rf /tmp/permissions-probe" present "permissions" yes "" "$TMP_DIR/jev-on.jsonc"
+probe destructive-jevv-off "rm -rf /tmp/permissions-probe" absent "permissions" no
 
 # Hard block: a bare-word credential pattern on a command a model will run.
 # `echo token` is deliberately innocuous, because anything that looks like a real
