@@ -45,13 +45,14 @@ PROBE_TIMEOUT=600 PI_E2E_MODEL=opencode/deepseek-v4.1-flash \
 | `simple-not-classified` | `echo bash-safety-ok` runs, and its bash result carries **no** usage — so it was never classified |
 | `compound-classified` | `echo cost && echo probe` runs, and its bash result **carries** usage |
 | `hard-block` | `echo "$GITHUB_TOKEN" \| wc -c` returns the credential-gate reason |
-| `catastrophe` | `chmod -R 000 /usr/share/bash-safety-nonexistent` returns the catastrophe-gate reason — a non-`rm` modification of a system path |
 | `glob-ask` | `sudo true` is blocked with `requires approval, but no interactive UI is available` |
 
-A glob *deny* is only reported, not asserted: every deny glob is either a credential
-path (which the hard block catches first) or a catastrophic delete, and models refuse
-to issue those. Those verdicts are asserted deterministically in `lib.test.ts`
-instead.
+Commands whose *point* is destructive — `chmod -R 000 /usr/…`, `rm -rf /usr/…` — are
+only reported, never asserted: a cautious model either refuses them or quietly
+substitutes a read, so the probe would measure the model, not the gate. Their
+verdicts are asserted deterministically in `lib.test.ts`, and the catastrophe gate
+was verified end to end by hand: `chmod -R 000 /usr/share/…` returned
+`'chmod' targets '/usr'` while the same command under `/tmp` ran.
 
 Two caveats, both real:
 
