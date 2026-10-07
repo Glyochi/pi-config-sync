@@ -229,6 +229,12 @@ export const DEFAULT_BASH_RULES: Record<string, RuleState> = {
 	"*wget*--post-file*": "ask",
 	"sudo *": "ask",
 	"* sudo *": "ask",
+	// Piping a remote script into a shell. Deterministic, so the classifier does not
+	// have to see it.
+	"*| sh*": "ask",
+	"*|sh*": "ask",
+	"*| bash*": "ask",
+	"*|bash*": "ask",
 };
 
 /**
@@ -551,10 +557,16 @@ const INTERPRETER_PAYLOADS: RegExp[] = [
  * True when the command is more than one command, or hides a payload inside an
  * interpreter. Only these need the classifier; everything else a glob can decide.
  */
+/** An interpreter invoked with an inline payload, which hides what actually runs. */
+export function hasInterpreterPayload(command: string): boolean {
+	if (typeof command !== "string" || command.trim() === "") return false;
+	return INTERPRETER_PAYLOADS.some((pattern) => pattern.test(command));
+}
+
 export function isCompoundOrInterpreter(command: string): boolean {
 	if (typeof command !== "string" || command.trim() === "") return false;
 	if (SHELL_METACHARACTERS.test(command)) return true;
-	return INTERPRETER_PAYLOADS.some((pattern) => pattern.test(command));
+	return hasInterpreterPayload(command);
 }
 
 function isReadOnlySegment(segment: string): boolean {
@@ -664,10 +676,14 @@ function bareName(token: string): string {
 	return token.split("/").pop() ?? token;
 }
 
+function looksLikeAssignment(token: string): boolean {
+	return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
+}
+
 function looksLikeFlagOrAssignment(token: string): boolean {
 	// A duration argument (`timeout 5 chmod …`) is skipped too: a command word is
 	// never a bare number.
-	return token.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(token) || /^\d+[smhd]?$/.test(token);
+	return token.startsWith("-") || looksLikeAssignment(token) || /^\d+[smhd]?$/.test(token);
 }
 
 /**
@@ -680,7 +696,9 @@ export function commandWordOf(segment: string): string | undefined {
 	let index = 0;
 	while (index < tokens.length) {
 		const token = tokens[index] as string;
-		if (COMMAND_WRAPPERS.has(bareName(token))) {
+		// A leading `VAR=value` is an assignment prefix, not the command: shell semantics
+		// put the real command word after it.
+		if (COMMAND_WRAPPERS.has(bareName(token)) || looksLikeAssignment(token)) {
 			index += 1;
 			while (index < tokens.length && looksLikeFlagOrAssignment(tokens[index] as string)) index += 1;
 			continue;
@@ -1111,6 +1129,36 @@ export function hasDestructiveIntent(command: string, policy: PermissionsConfig)
 	return false;
 }
 
+/** A command word that is not a literal name, so nothing can be read from it. */
+export function hasOpaqueCommandWord(command: string): boolean {
+	if (typeof command !== "string" || command.trim() === "") return false;
+	for (const segment of command.split(SEGMENT_SEPARATOR)) {
+		const trimmed = segment.trim();
+		if (trimmed === "") continue;
+		const word = commandWordOf(trimmed);
+		if (word === undefined) continue;
+		if (word.startsWith("$") || word.startsWith("`")) return true;
+	}
+	return false;
+}
+
+export type JudgementReason = "destructive" | "interpreter" | "opaque";
+
+/**
+ * Why a shell command needs the classifier, or `undefined` when it does not.
+ *
+ * Structure alone is not a reason. The globs match the whole command string, so an
+ * external-effect verb is caught whether or not the command is chained; what a glob
+ * cannot read is hidden intent — a destructive verb, an interpreter payload, or a
+ * command word that is a variable or substitution.
+ */
+export function needsJudgement(command: string, policy: PermissionsConfig): JudgementReason | undefined {
+	if (hasDestructiveIntent(command, policy)) return "destructive";
+	if (hasInterpreterPayload(command)) return "interpreter";
+	if (hasOpaqueCommandWord(command)) return "opaque";
+	return undefined;
+}
+
 /** Last-match-wins over an ordered rule map. */
 export function ruleVerdict(rules: Record<string, RuleState>, value: string): RuleState {
 	let verdict: RuleState = "allow";
@@ -1126,7 +1174,8 @@ export type Decision =
 	| { kind: "allow" }
 	| { kind: "block"; reason: string }
 	| { kind: "ask"; reason: string }
-	| { kind: "classify" };
+	/** `reason` records why the classifier was needed, for the audit log. */
+	| { kind: "classify"; reason: JudgementReason | "tool" }; 
 
 export interface SwitchState {
 	jev: boolean;
@@ -1153,7 +1202,9 @@ export interface DeterministicInput {
  *    `edit` are deliberately left to pi-plan-build, which already blocks them there
  *    and already exempts the plan Markdown that Plan mode has to be able to revise.
  * 4. Declarative bash globs.
- * 5. Jev, for effectful tools only, and only for a command a glob cannot read.
+ * 5. Jev, for effectful tools only, and for a shell command only when it hides its
+ *    intent (`needsJudgement`). Structure is not a reason to classify: the globs
+ *    match the whole string, so a chained external-effect command is already decided.
  */
 export function resolveDeterministic(input: DeterministicInput): Decision {
 	const { toolName, mode, switches, policy } = input;
@@ -1199,17 +1250,14 @@ export function resolveDeterministic(input: DeterministicInput): Decision {
 
 	if (category === "effectful" && switches.jev) {
 		if (isShellTool(toolName)) {
-			// A read-only chain is free, and so is a single command that changes nothing.
-			// A compound or interpreter command needs judgement because a glob cannot read
-			// it, and so does a destructive verb: `rm -rf /workspace` is one command, but no
-			// glob can say whether it fits the task.
+			// A read-only chain is free, and so is a command whose intent a glob can read.
 			if (input.command === undefined) return { kind: "allow" };
 			if (isReadOnlyChain(input.command)) return { kind: "allow" };
-			if (!isCompoundOrInterpreter(input.command) && !hasDestructiveIntent(input.command, policy)) {
-				return { kind: "allow" };
-			}
+			const reason = needsJudgement(input.command, policy);
+			if (reason === undefined) return { kind: "allow" };
+			return { kind: "classify", reason };
 		}
-		return { kind: "classify" };
+		return { kind: "classify", reason: "tool" };
 	}
 
 	return { kind: "allow" };

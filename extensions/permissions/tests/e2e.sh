@@ -153,11 +153,15 @@ echo "permissions end-to-end probes"
 echo "  each probe runs a real pi session: one model call, plus one classifier call when effectful and Jev is on"
 echo
 
-# The deterministic fast path: a single command and a compound one with Jev off cost
-# nothing, and the same compound command with Jev on is classified.
+# The deterministic fast path: a single command and a compound one cost nothing, with
+# Jev on or off, unless the command hides its intent.
 probe simple-not-classified "echo probe-ok" present "probe-ok" no
-probe compound-jevv-off "echo a && echo b" present "b" no
-probe compound-jevv-on "echo a && echo b" present "b" yes "" "$TMP_DIR/jev-on.jsonc"
+probe benign-chain-jevv-off "echo a && echo b" present "b" no
+# With Jev on, a benign chain is still free: structure is not a reason to classify.
+probe benign-chain-jevv-on "echo a && echo b" present "b" no "" "$TMP_DIR/jev-on.jsonc"
+# An external-effect verb is caught by the globs whether or not it is chained, so the
+# classifier is not needed for it either.
+probe chained-external-effect "git push origin main && echo done" present "a bash rule requires approval" no
 # A destructive verb is one command, but a glob cannot judge it, so it is classified
 # too. This is the gap the `check` report exposed.
 probe destructive-jevv-on "rm -rf /tmp/permissions-probe" any "" consulted "" "$TMP_DIR/jev-on.jsonc"

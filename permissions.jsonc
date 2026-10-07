@@ -146,7 +146,13 @@
     "*wget*--post-data*": "ask",
     "*wget*--post-file*": "ask",
     "sudo *": "ask",
-    "* sudo *": "ask"
+    "* sudo *": "ask",
+
+    // Piping a remote script into a shell: deterministic, so Jev need not see it.
+    "*| sh*": "ask",
+    "*|sh*": "ask",
+    "*| bash*": "ask",
+    "*|bash*": "ask"
   },
 
   // Command words that change what they touch. A single one of these is not decidable

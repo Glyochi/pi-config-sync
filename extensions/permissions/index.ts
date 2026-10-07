@@ -237,6 +237,18 @@ function ensureState(ctx: ExtensionContext, pi: ExtensionAPI): State {
 	return state ?? resetState(ctx, pi);
 }
 
+/**
+ * Re-read the mode when the session moved on. A composer toggle appends a
+ * `pi-plan-build-state` entry, which moves the leaf, so this is what keeps the gate
+ * and the `/permissions` command from evaluating against a stale mode.
+ */
+function refreshMode(ctx: ExtensionContext, pi: ExtensionAPI, current: State): void {
+	const leafId = ctx.sessionManager.getLeafId();
+	if (leafId === current.leafId) return;
+	current.leafId = leafId;
+	current.mode = readMode(ctx, pi);
+}
+
 function warnConfigOnce(ctx: ExtensionContext, current: State): void {
 	if (current.configStatus === "loaded" || current.configNotified) return;
 	current.configNotified = true;
@@ -426,12 +438,7 @@ async function gate(
 	const current = ensureState(ctx, pi);
 	if (!current.config.enabled) return undefined;
 
-	// Refresh the mode when the session moved on, so a mid-turn mode switch is seen.
-	const leafId = ctx.sessionManager.getLeafId();
-	if (leafId !== current.leafId) {
-		current.leafId = leafId;
-		current.mode = readMode(ctx, pi);
-	}
+	refreshMode(ctx, pi, current);
 
 	const command = commandOf(event);
 	const targetPath = targetPathOf(event);
@@ -472,6 +479,8 @@ async function gate(
 	}
 
 	// Classify. Cached per payload so an identical call in the same session is free.
+	// `decision.reason` records why this needed the classifier at all.
+	const judgement = decision.reason;
 	const key = cacheKey(JSON.stringify({ tool: event.toolName, command, targetPath }), current.intent);
 	let cached = current.cache.get(key);
 	let source = "cache";
@@ -519,6 +528,7 @@ async function gate(
 		switches: current.switches,
 		decision: cached.verdict,
 		source,
+		judgement,
 		confidence: cached.confidence,
 	});
 	if (action.kind === "run") return undefined;
@@ -652,6 +662,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		description: "Inspect or control the permissions policy",
 		handler: async (args, ctx) => {
 			const current = ensureState(ctx, pi);
+			// The composer can change the mode without a turn boundary, so read it live
+			// rather than using whatever `before_agent_start` last cached.
+			refreshMode(ctx, pi, current);
 			const trimmed = args.trim();
 			const spaceIndex = trimmed.indexOf(" ");
 			const sub = (spaceIndex === -1 ? trimmed : trimmed.slice(0, spaceIndex)).toLowerCase();
