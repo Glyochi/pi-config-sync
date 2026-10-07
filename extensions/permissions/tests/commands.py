@@ -114,15 +114,15 @@ for index, (label, _, expected, forbidden) in enumerate(CASES):
 if not indicator_updates:
     failures.append("no setStatus request was emitted for the footer indicator")
 else:
-    keys = {key for key, _ in indicator_updates}
-    if keys != {"permissions"}:
-        failures.append(f"unexpected status keys: {sorted(keys)}")
-    texts = [text for _, text in indicator_updates]
-    if texts[-1] != "jev off · yolo off":
-        failures.append(f'expected the final indicator to read "jev off · yolo off", got "{texts[-1]}"')
-    if not any("jev on" in text for text in texts):
+    # Other extensions share the footer status line, so judge only our own key.
+    mine = [text for key, text in indicator_updates if key == "permissions"]
+    if not mine:
+        failures.append("no setStatus request with the permissions key was emitted")
+    if mine and mine[-1] != "jev off · yolo off":
+        failures.append(f'expected the final indicator to read "jev off · yolo off", got "{mine[-1]}"')
+    if not any("jev on" in text for text in mine):
         failures.append("no indicator update reported jev on")
-    if not any("yolo on" in text for text in texts):
+    if not any("yolo on" in text for text in mine):
         failures.append("no indicator update reported yolo on")
 
 for note in collected:
