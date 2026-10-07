@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Exercise the `/permissions` command surface over RPC mode.
+
+Print mode cannot run a slash command and the TUI is not scriptable, so this drives
+`pi --mode rpc`, sends each subcommand as a prompt, and asserts on the notification the
+handler sends back. It is the only automated check of the command surface itself; the
+decisions behind it are covered by lib.test.ts.
+
+Run: python3 ~/.pi/agent/extensions/permissions/tests/commands.py
+"""
+import json
+import subprocess
+import sys
+import threading
+import time
+
+# (label, command, substring expected in the notification, optional substring that must NOT appear)
+CASES = [
+    ("status", "/permissions status", "mode=build", None),
+    ("status config", "/permissions status", "config=loaded", None),
+    ("mode", "/permissions mode", "mode=build", None),
+    ("check simple", '/permissions check bash "ls -la"', "bash -> allow — the deterministic rules decided it", None),
+    ("check workdir delete", '/permissions check bash "rm /tmp/a.txt"', "bash -> allow — the deterministic rules decided it", None),
+    ("check glob wipe with jev off", '/permissions check bash "rm -rf /workspace/*"', "bash -> allow", None),
+    ("jev on", "/permissions jev on", "jev=on", None),
+    # The verdict is probabilistic, so assert only that the classifier was consulted.
+    ("check outside workdir", '/permissions check bash "rm -rf /srv/data"', "(Jev,", None),
+    ("check catastrophe", '/permissions check bash "rm -rf /usr/share/x"', "catastrophe gate", None),
+    ("check read", "/permissions check read /workspace/AGENTS.md", "read -> allow", None),
+    ("yolo on", "/permissions yolo on", "yolo=on", None),
+    ("check under yolo", '/permissions check bash "rm -rf /usr/share/x"', "YOLO is on", "catastrophe gate"),
+    ("yolo off", "/permissions yolo off", "yolo=off", None),
+    ("jev off", "/permissions jev off", "jev=off", None),
+    ("bad subcommand", "/permissions bogus", "usage:", None),
+]
+
+TIMEOUT = 300.0
+
+proc = subprocess.Popen(
+    ["pi", "--mode", "rpc", "--no-session"],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    text=True,
+    bufsize=1,
+)
+
+notifications: list[str] = []
+responses: dict[str, dict] = {}
+lock = threading.Lock()
+
+
+def reader() -> None:
+    for line in proc.stdout:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except Exception:
+            continue
+        if record.get("type") == "extension_ui_request" and record.get("method") == "notify":
+            with lock:
+                notifications.append(record.get("message", ""))
+        elif record.get("type") == "response":
+            with lock:
+                responses[record.get("id", "")] = record
+
+
+threading.Thread(target=reader, daemon=True).start()
+
+deadline = time.time() + TIMEOUT
+for index, (_, message, _, _) in enumerate(CASES):
+    if time.time() > deadline:
+        print("FAIL: timed out driving the command surface")
+        proc.kill()
+        sys.exit(1)
+    proc.stdin.write(json.dumps({"id": f"c{index}", "type": "prompt", "message": message}) + "\n")
+    proc.stdin.flush()
+    time.sleep(1.2)
+
+time.sleep(3)
+proc.terminate()
+try:
+    proc.wait(timeout=10)
+except subprocess.TimeoutExpired:
+    proc.kill()
+
+with lock:
+    collected = list(notifications)
+    answered = dict(responses)
+
+failures: list[str] = []
+if len(collected) != len(CASES):
+    failures.append(f"expected {len(CASES)} notifications, got {len(collected)}")
+
+for index, (label, _, expected, forbidden) in enumerate(CASES):
+    if not answered.get(f"c{index}", {}).get("success"):
+        failures.append(f"{label}: no successful response")
+    note = collected[index] if index < len(collected) else ""
+    if expected not in note:
+        failures.append(f'{label}: expected "{expected}" in "{note[:120]}"')
+    if forbidden is not None and forbidden in note:
+        failures.append(f'{label}: did not expect "{forbidden}" in "{note[:120]}"')
+
+for note in collected:
+    print(f"- {note}")
+
+print()
+if failures:
+    print(f"FAIL: {len(failures)} of {len(CASES)} command cases")
+    for failure in failures:
+        print(f"  - {failure}")
+    sys.exit(1)
+print(f"ok: {len(CASES)} command cases passed")
