@@ -48,9 +48,11 @@ nothing is written, so `/permissions reload` restores the file's value. `/permis
 status` reports the threshold, the model, the call count, and the counters: the raw
 verdict crossed with the confidence side, so `high + low` is the call total.
 
-The editor completes `/permissions` arguments as you type: subcommands, `on|off` for the
-switches, threshold presets, and `check` tool names. An unknown subcommand prints the
-same list as an aligned usage block.
+The editor completes `/permissions` arguments as you type and on Tab: subcommands,
+`on|off` for the switches, threshold presets, and `check` tool names. Tab needs an
+extension-side wrapper because pi's editor routes Tab to file completion once the line
+has a space; `check`'s command or path argument still falls through to files. An unknown
+subcommand prints the same list as an aligned usage block.
 
 ## Running the tests
 
