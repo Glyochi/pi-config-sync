@@ -47,6 +47,8 @@ import {
 	parseJsonc,
 	parseForwardedResponse,
 	parseThreshold,
+	permissionCompletions,
+	permissionsUsage,
 	PLAN_BUILD_STATE_TYPE,
 	recordClassification,
 	resolveDeterministic,
@@ -728,6 +730,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 	pi.registerCommand("permissions", {
 		description: "Inspect or control the permissions policy",
+		getArgumentCompletions: (prefix) => permissionCompletions(prefix),
 		handler: async (args, ctx) => {
 			const current = ensureState(ctx, pi);
 			// The composer can change the mode without a turn boundary, so read it live
@@ -860,11 +863,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					return;
 				}
 				default: {
-					notify(
-						ctx,
-						"permissions: usage: /permissions [status|jev on|off|yolo on|off|threshold <0..1>|mode|check <tool> <value>|reload]",
-						"warning",
-					);
+					notify(ctx, permissionsUsage(), "warning");
 				}
 			}
 		},

@@ -48,7 +48,9 @@ import {
 	modeFromEntries,
 	parseForwardedResponse,
 	parseThreshold,
+	permissionCompletions,
 	permissionIndicator,
+	permissionsUsage,
 	recordClassification,
 	modeFromEntryData,
 	PLAN_BUILD_STATE_TYPE,
@@ -536,6 +538,30 @@ eq(
 	formatJevCounters(tallied),
 	"counters: allow 1 high, 1 low · ask 1 high, 0 low · deny 0 high, 1 low",
 );
+
+// --- command usage and completions ----------------------------------------
+// `prefix` is the whole argument text, so `/permissions jev o` arrives as `jev o`.
+
+eq(
+	"an empty prefix lists every subcommand",
+	permissionCompletions("")?.map((item) => item.label),
+	["status", "jev", "yolo", "threshold", "check", "mode", "reload"],
+);
+eq("a partial subcommand narrows the list", permissionCompletions("th")?.map((item) => item.value), ["threshold "]);
+eq("a switch subcommand offers on and off", permissionCompletions("jev ")?.map((item) => item.value), ["jev on", "jev off"]);
+eq("a partial switch value narrows it", permissionCompletions("yolo of")?.map((item) => item.value), ["yolo off"]);
+eq("a threshold value is suggested", permissionCompletions("threshold 0.5")?.map((item) => item.value), ["threshold 0.5"]);
+eq("check offers tool names", permissionCompletions("check ba")?.map((item) => item.value), ["check bash "]);
+eq("an unknown subcommand has no suggestions", permissionCompletions("bogus"), null);
+eq("a finished argument has no suggestions", permissionCompletions("status "), null);
+
+const usage = permissionsUsage();
+check(
+	"the usage block names every subcommand",
+	["status", "jev", "yolo", "threshold", "check", "mode", "reload"].every((name) => usage.includes(name)),
+);
+check("the usage block explains the threshold", usage.includes("threshold [0..1]"));
+check("the usage block is multi-line", usage.split("\n").length >= 8);
 
 // --- check reporting ------------------------------------------------------
 // The property that matters: a line for a command the pipeline does not classify must

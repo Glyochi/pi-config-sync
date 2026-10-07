@@ -1233,6 +1233,94 @@ export function toolCategory(toolName: string): ToolCategory {
 	return "neutral";
 }
 
+// --- command usage and completions ----------------------------------------
+// One list drives both the usage block and the editor suggestions, so the two cannot
+// disagree about what `/permissions` accepts.
+
+interface PermissionSubcommand {
+	name: string;
+	usage: string;
+	description: string;
+}
+
+const PERMISSION_SUBCOMMANDS: PermissionSubcommand[] = [
+	{ name: "status", usage: "status", description: "mode, switches, threshold, model, counters" },
+	{ name: "jev", usage: "jev on|off", description: "turn Jev on or off for this session" },
+	{ name: "yolo", usage: "yolo on|off", description: "auto-approve asks and drop the hard blocks" },
+	{ name: "threshold", usage: "threshold [0..1]", description: "show or set the confidence threshold (session only)" },
+	{ name: "check", usage: "check <tool> <value>", description: "dry-run the decision for one call" },
+	{ name: "mode", usage: "mode", description: "the mode read from pi-plan-build state" },
+	{ name: "reload", usage: "reload", description: "re-read permissions.jsonc" },
+];
+
+const PERMISSION_SWITCH_VALUES = ["on", "off"];
+const PERMISSION_THRESHOLD_VALUES = ["0.1", "0.3", "0.5", "0.7", "0.9", "1.0"];
+const PERMISSION_CHECK_TOOLS = ["bash", "powershell", "read", "grep", "find", "ls", "write", "edit", "mcp"];
+
+/** One autocomplete suggestion, structurally an `AutocompleteItem` from pi-tui. */
+export interface PermissionCompletion {
+	value: string;
+	label: string;
+	description?: string;
+}
+
+/** The multi-line `/permissions` usage block, aligned for the notify pane. */
+export function permissionsUsage(): string {
+	const width = Math.max(...PERMISSION_SUBCOMMANDS.map((sub) => sub.usage.length));
+	const lines = PERMISSION_SUBCOMMANDS.map((sub) => `  ${sub.usage.padEnd(width)}  ${sub.description}`);
+	return ["permissions: usage:", ...lines].join("\n");
+}
+
+/**
+ * Argument completions for `/permissions`. `prefix` is the whole argument text typed so
+ * far, so `/permissions jev o` arrives as `jev o`. `null` means there is nothing to
+ * suggest, which lets the editor fall through to its own providers.
+ */
+export function permissionCompletions(prefix: string): PermissionCompletion[] | null {
+	const tokens = prefix.trim().split(/\s+/).filter((token) => token !== "");
+	const trailingSpace = /\s$/.test(prefix);
+	const first = tokens[0];
+	if (first === undefined) {
+		return PERMISSION_SUBCOMMANDS.map((sub) => ({
+			value: `${sub.name} `,
+			label: sub.name,
+			description: sub.description,
+		}));
+	}
+	// Still typing the subcommand itself.
+	if (tokens.length === 1 && !trailingSpace) {
+		const matches = PERMISSION_SUBCOMMANDS.filter((sub) => sub.name.startsWith(first));
+		return matches.length > 0
+			? matches.map((sub) => ({ value: `${sub.name} `, label: sub.name, description: sub.description }))
+			: null;
+	}
+	const values = (options: string[], token: string, lead: string): PermissionCompletion[] | null => {
+		const matches = options.filter((option) => option.startsWith(token));
+		return matches.length > 0 ? matches.map((option) => ({ value: `${lead}${option}`, label: option })) : null;
+	};
+	if (first === "jev" || first === "yolo") {
+		if (tokens.length === 1) return values(PERMISSION_SWITCH_VALUES, "", `${first} `);
+		if (tokens.length === 2 && !trailingSpace) return values(PERMISSION_SWITCH_VALUES, tokens[1] as string, `${first} `);
+		return null;
+	}
+	if (first === "threshold") {
+		if (tokens.length === 1) return values(PERMISSION_THRESHOLD_VALUES, "", "threshold ");
+		if (tokens.length === 2 && !trailingSpace) return values(PERMISSION_THRESHOLD_VALUES, tokens[1] as string, "threshold ");
+		return null;
+	}
+	if (first === "check") {
+		// The tool name is not the last argument, so the completion leaves a space for
+		// the command or path that follows.
+		if (tokens.length === 1) return PERMISSION_CHECK_TOOLS.map((tool) => ({ value: `check ${tool} `, label: tool }));
+		if (tokens.length === 2 && !trailingSpace) {
+			const matches = PERMISSION_CHECK_TOOLS.filter((tool) => tool.startsWith(tokens[1] as string));
+			return matches.length > 0 ? matches.map((tool) => ({ value: `check ${tool} `, label: tool })) : null;
+		}
+		return null;
+	}
+	return null;
+}
+
 // --- globs ----------------------------------------------------------------
 
 /** Whole-string glob: `*` becomes `.*`, `?` becomes `.`, a trailing ` *` optional. */
