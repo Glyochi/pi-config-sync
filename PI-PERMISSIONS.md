@@ -67,6 +67,11 @@ returns one of `allow` / `ask` / `deny`.
 `deny` is an emphasis, not a hard stop, whenever a UI exists: the user can still
 approve the command. Only the credential hard block is absolute.
 
+`/bash-safety check` and the `ask`/`deny` confirmation dialogs print the full
+`allow` / `ask` / `deny` probability distribution, not just the winning label, so
+a low-confidence verdict (for example `deny 0.52` against `ask 0.38`) is visible
+when deciding.
+
 ## The credential hard block
 
 Case-insensitive substring matching over the whole command string against

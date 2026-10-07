@@ -347,15 +347,38 @@ export function decide(verdict: Verdict, options: { hasUI: boolean; yolo: boolea
 		: { kind: "confirm", severity: "disapprove", title: "Jev disapproves — be careful" };
 }
 
+/**
+ * Render every label probability the classifier reported, in verdict order, e.g.
+ * `allow 0.10 · ask 0.38 · deny 0.52`. Returns "" when nothing usable is available.
+ */
+export function formatDistribution(probabilities: Record<string, number> | undefined): string {
+	if (probabilities === undefined || probabilities === null || typeof probabilities !== "object") return "";
+	const parts: string[] = [];
+	for (const label of VERDICTS) {
+		const value = probabilities[label];
+		if (typeof value !== "number" || !Number.isFinite(value)) continue;
+		parts.push(`${label} ${value.toFixed(2)}`);
+	}
+	return parts.join(" · ");
+}
+
 /** Build the dialog body shown for an `ask` or `deny` verdict. */
-export function confirmMessage(verdict: Verdict, command: string, confidence: number | undefined): string {
+export function confirmMessage(
+	verdict: Verdict,
+	command: string,
+	confidence: number | undefined,
+	probabilities?: Record<string, number>,
+): string {
 	const confidenceText =
 		typeof confidence === "number" && Number.isFinite(confidence) ? ` (confidence ${confidence.toFixed(2)})` : "";
 	const lead =
 		verdict === "deny"
 			? `Jev disapproves of this command${confidenceText}. Run it only if you are sure it is intended.`
 			: `Jev is unsure whether this command fits the session task${confidenceText}.`;
-	return `${lead}\n\n${command}`;
+	const body = [`${lead}\n\n${command}`];
+	const distribution = formatDistribution(probabilities);
+	if (distribution !== "") body.push(`Jev's distribution: ${distribution}`);
+	return body.join("\n\n");
 }
 
 /** Collect and cap the session intent sent to the classifier. */
@@ -389,8 +412,8 @@ export function cacheKey(command: string, intent: IntentSnapshot): string {
 }
 
 /** Bounded insertion-ordered verdict cache; the oldest entry is evicted first. */
-export class VerdictCache {
-	private readonly entries = new Map<string, Verdict>();
+export class VerdictCache<T = Verdict> {
+	private readonly entries = new Map<string, T>();
 	private readonly max: number;
 
 	constructor(max: number) {
@@ -401,7 +424,7 @@ export class VerdictCache {
 		return this.entries.size;
 	}
 
-	get(key: string): Verdict | undefined {
+	get(key: string): T | undefined {
 		const hit = this.entries.get(key);
 		if (hit === undefined) return undefined;
 		this.entries.delete(key);
@@ -409,10 +432,10 @@ export class VerdictCache {
 		return hit;
 	}
 
-	set(key: string, verdict: Verdict): void {
+	set(key: string, value: T): void {
 		if (this.max === 0) return;
 		this.entries.delete(key);
-		this.entries.set(key, verdict);
+		this.entries.set(key, value);
 		while (this.entries.size > this.max) {
 			const oldest = this.entries.keys().next();
 			if (oldest.done === true) break;

@@ -18,6 +18,7 @@ import {
 	DEFAULT_WORKING_DIRECTORIES,
 	decide,
 	effectiveWorkingDirectories,
+	formatDistribution,
 	hashText,
 	hardBlockReason,
 	intentHash,
@@ -138,6 +139,23 @@ check("ask and deny reasons differ", (decide("ask", noUiOff) as any).reason !== 
 check("confirm message includes the command", confirmMessage("ask", "gh auth status", 0.61).includes("gh auth status"));
 check("confirm message shows confidence", confirmMessage("ask", "x", 0.61).includes("0.61"));
 check("deny wording differs from ask wording", confirmMessage("deny", "x", 0.9).split("\n")[0] !== confirmMessage("ask", "x", 0.9).split("\n")[0]);
+
+// --- probability distribution --------------------------------------------
+
+eq("distribution lists every label in verdict order", formatDistribution({ allow: 0.1, ask: 0.38, deny: 0.52 }), "allow 0.10 · ask 0.38 · deny 0.52");
+eq("missing probabilities render nothing", formatDistribution(undefined), "");
+eq("partial probabilities render what is known", formatDistribution({ deny: 1 }), "deny 1.00");
+eq("non-numeric probabilities are ignored", formatDistribution({ allow: "x" } as unknown as Record<string, number>), "");
+check(
+	"confirm message shows the whole distribution",
+	confirmMessage("deny", "cmd", 0.52, { allow: 0.1, ask: 0.38, deny: 0.52 }).includes("allow 0.10 · ask 0.38 · deny 0.52"),
+);
+check("confirm message labels the distribution", confirmMessage("deny", "cmd", 0.52, { deny: 1 }).includes("Jev's distribution:"));
+check("confirm message omits an empty distribution", !confirmMessage("ask", "cmd", 0.61).includes("distribution"));
+
+const outcomeCache = new VerdictCache<{ verdict: string; probabilities: Record<string, number> }>(1);
+outcomeCache.set("k", { verdict: "deny", probabilities: { deny: 0.9 } });
+eq("generic cache keeps the whole record", outcomeCache.get("k")?.probabilities.deny, 0.9);
 
 // --- intent, capping, cache ---------------------------------------------
 

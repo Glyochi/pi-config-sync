@@ -29,6 +29,7 @@ import {
 	confirmMessage,
 	decide,
 	effectiveWorkingDirectories,
+	formatDistribution,
 	hardBlockReason,
 	matchHardBlock,
 	normalizeConfig,
@@ -54,12 +55,19 @@ interface PermissionSystemRuntimeApi {
 	toggleYoloMode(options?: { persist?: boolean; source?: string }): YoloControlResult;
 }
 
+/** What a cache entry remembers about one command's classification. */
+interface CachedVerdict {
+	verdict: Verdict;
+	confidence: number | undefined;
+	probabilities: Record<string, number> | undefined;
+}
+
 interface GateState {
 	config: BashSafetyConfig;
 	configPath: string;
 	configStatus: "loaded" | "missing" | "invalid";
 	configError: string | undefined;
-	cache: VerdictCache;
+	cache: VerdictCache<CachedVerdict>;
 	breaker: CircuitBreaker;
 	intent: IntentSnapshot;
 	git: { remote: string; branch: string } | undefined;
@@ -73,6 +81,7 @@ interface ClassifyOutcome {
 	kind: "ok" | "failure";
 	verdict: Verdict;
 	confidence: number | undefined;
+	probabilities: Record<string, number> | undefined;
 	error: string | undefined;
 }
 
@@ -189,7 +198,7 @@ function resetState(ctx: ExtensionContext): GateState {
 		configPath: configPath(),
 		configStatus: loaded.status,
 		configError: loaded.error,
-		cache: new VerdictCache(loaded.config.cacheEntries),
+		cache: new VerdictCache<CachedVerdict>(loaded.config.cacheEntries),
 		breaker: new CircuitBreaker(loaded.config.failureThreshold),
 		intent: readIntent(ctx, loaded.config.maxIntentChars),
 		git: readGit(ctx.cwd),
@@ -235,7 +244,13 @@ async function classify(command: string, ctx: ExtensionContext, state: GateState
 	try {
 		const model = await resolveClassifier(ctx, config);
 		if (!model) {
-			return { kind: "failure", verdict: "ask", confidence: undefined, error: `no classifier model for provider ${config.model.provider}` };
+			return {
+				kind: "failure",
+				verdict: "ask",
+				confidence: undefined,
+				probabilities: undefined,
+				error: `no classifier model for provider ${config.model.provider}`,
+			};
 		}
 		const signals: AbortSignal[] = [AbortSignal.timeout(config.timeoutMs)];
 		if (ctx.signal) signals.push(ctx.signal);
@@ -253,14 +268,35 @@ async function classify(command: string, ctx: ExtensionContext, state: GateState
 			{ signal: AbortSignal.any(signals) },
 		);
 		if (result.stopReason !== "stop") {
-			return { kind: "failure", verdict: "ask", confidence: undefined, error: result.errorMessage ?? result.stopReason };
+			return {
+				kind: "failure",
+				verdict: "ask",
+				confidence: undefined,
+				probabilities: undefined,
+				error: result.errorMessage ?? result.stopReason,
+			};
 		}
-		const answer = (result.answers as Record<string, { type?: string; choice?: unknown; confidence?: unknown }>).verdict;
+		const answer = (
+			result.answers as Record<
+				string,
+				{ type?: string; choice?: unknown; confidence?: unknown; probabilities?: unknown }
+			>
+		).verdict;
 		const choice = answer && answer.type === "choice" ? answer.choice : undefined;
 		const confidence = answer && typeof answer.confidence === "number" ? answer.confidence : undefined;
-		return { kind: "ok", verdict: verdictFromChoice(choice), confidence, error: undefined };
+		const probabilities =
+			answer && typeof answer.probabilities === "object" && answer.probabilities !== null
+				? (answer.probabilities as Record<string, number>)
+				: undefined;
+		return { kind: "ok", verdict: verdictFromChoice(choice), confidence, probabilities, error: undefined };
 	} catch (error) {
-		return { kind: "failure", verdict: "ask", confidence: undefined, error: error instanceof Error ? error.message : String(error) };
+		return {
+			kind: "failure",
+			verdict: "ask",
+			confidence: undefined,
+			probabilities: undefined,
+			error: error instanceof Error ? error.message : String(error),
+		};
 	}
 }
 
@@ -279,11 +315,10 @@ async function gate(command: unknown, ctx: ExtensionContext): Promise<ToolCallEv
 	}
 
 	const key = cacheKey(command, state.intent);
-	let verdict = state.cache.get(key);
-	let confidence: number | undefined;
+	let cached = state.cache.get(key);
 	let source = "cache";
 
-	if (verdict === undefined) {
+	if (cached === undefined) {
 		if (state.breaker.tripped) return undefined;
 		const outcome = await classify(command, ctx, state);
 		if (outcome.kind === "failure") {
@@ -297,14 +332,14 @@ async function gate(command: unknown, ctx: ExtensionContext): Promise<ToolCallEv
 			return undefined;
 		}
 		state.breaker.recordSuccess();
-		verdict = outcome.verdict;
-		confidence = outcome.confidence;
+		cached = { verdict: outcome.verdict, confidence: outcome.confidence, probabilities: outcome.probabilities };
 		source = "classifier";
-		state.cache.set(key, verdict);
+		state.cache.set(key, cached);
 	}
 
+	const verdict = cached.verdict;
 	const action = decide(verdict, { hasUI: ctx.hasUI, yolo: readYolo(state.config) });
-	state.lastVerdict = `${verdict} (${source})`;
+	state.lastVerdict = `${verdict} (${source})`;         
 
 	if (action.kind === "run") {
 		if (action.auto && !state.yoloNotified) {
@@ -319,7 +354,10 @@ async function gate(command: unknown, ctx: ExtensionContext): Promise<ToolCallEv
 		return { block: true, reason: action.reason };
 	}
 
-	const approved = await ctx.ui.confirm(action.title, confirmMessage(verdict, capText(command, state.config.maxCommandChars), confidence));
+	const approved = await ctx.ui.confirm(
+		action.title,
+		confirmMessage(verdict, capText(command, state.config.maxCommandChars), cached.confidence, cached.probabilities),
+	);
 	if (approved) return undefined;
 	return { block: true, reason: `Rejected by the user after a Jev '${verdict}' verdict.` };
 }
@@ -406,9 +444,12 @@ export default function bashSafetyExtension(pi: ExtensionAPI): void {
 					const yolo = readYolo(state.config);
 					const action = decide(outcome.verdict, { hasUI: ctx.hasUI, yolo });
 					const confidence = outcome.confidence === undefined ? "n/a" : outcome.confidence.toFixed(2);
+					const distribution = formatDistribution(outcome.probabilities);
+					const auto = action.kind === "run" && action.auto ? " (yolo)" : "";
+					const detail = distribution === "" ? "" : `  [${distribution}]`;
 					notify(
 						ctx,
-						`bash-safety: ${outcome.verdict} (confidence ${confidence}) -> ${action.kind}${action.kind === "run" && action.auto ? " (yolo)" : ""}`,
+						`bash-safety: ${outcome.verdict} (confidence ${confidence}) -> ${action.kind}${auto}${detail}`,
 						outcome.verdict === "allow" ? "info" : "warning",
 					);
 					return;
