@@ -37,6 +37,10 @@ Jev defaults **off** in `permissions.jsonc`, so the fast path is the default; tu
 per session with `/permissions jev on`. YOLO defaults off too, and with it on there is no
 floor at all.
 
+The footer carries the indicator on its status line, below the stats line:
+`jev off · yolo off`, in the warning colour while YOLO is on, and `permissions off` when
+the gate is disabled. Other extensions share that line.
+
 ## Running the tests
 
 Deterministic suites, no credentials or network needed:

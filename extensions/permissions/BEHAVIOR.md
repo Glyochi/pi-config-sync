@@ -97,6 +97,18 @@ run under YOLO and prompt without it.
 - Deletes of specific paths inside the working directories.
 - Reads: `read`, `grep`, `find`, `ls` never reach the classifier.
 
+## The footer indicator
+
+The two switches show on the footer's status line, below the stats line: `jev off · yolo
+off`, coloured with the warning colour while YOLO is on, since that is the state with no
+floor. It reads `permissions off` when the gate is disabled, because reporting switch
+values for a gate that is not running would mislead.
+
+It is one line rather than inline with the cwd: a replaced footer cannot reproduce the
+`xp`, `(sub)`, routed-model and `(auto)` markers, which are not reachable from an
+extension. Other extensions share that line and it is sorted by key, so `git-sync` and
+`pi-plan-build` entries appear alongside it.
+
 ## Asking at runtime
 
 - `/permissions status` — the mode, both switches, and the resulting behaviour.
