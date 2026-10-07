@@ -9,6 +9,7 @@
 #   - a single command runs and is NOT classified (no usage on the bash result)
 #   - a compound command runs and IS classified (usage on the bash result)
 #   - the credential hard block stops a command before any classifier call
+#   - the catastrophe gate stops a non-rm modification of a system path
 #   - pi-permission-system's globs decide single commands, with no classifier call
 #
 # The glob verdict table itself is asserted deterministically in lib.test.ts; these
@@ -150,6 +151,7 @@ echo
 probe simple-not-classified "echo bash-safety-ok" "bash-safety-ok" no
 probe compound-classified "echo cost && echo probe" "probe" yes
 probe hard-block 'echo "$GITHUB_TOKEN" | wc -c' "bash-safety credential gate" no
+probe catastrophe "chmod -R 000 /usr/share/bash-safety-nonexistent" "bash-safety catastrophe gate" no
 probe glob-ask "sudo true" "requires approval, but no interactive UI is available" no
 probe glob-deny "rm -rf /usr/share/bash-safety-nonexistent" "not permitted to run" no
 

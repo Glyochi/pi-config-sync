@@ -36,6 +36,7 @@ The split itself:
 | Interpreter payload (`bash -c`, `sh -c`, `python -c`, `node -e`, `eval`, `xargs … sh -c`, …) | Jev | one round trip |
 | Compound, but every segment read-only and nothing redirected | neither — passes through | instant, free |
 | Anything touching a credential path | `bash-safety` hard block | instant, free |
+| Anything *modifying* a catastrophic directory | `bash-safety` catastrophe gate | instant, free |
 
 Everything else — file tools, MCP, skills, `special` — stays with
 `pi-permission-system`: allow by default, ask when a path-bearing file tool
@@ -62,6 +63,42 @@ allows. Only the named system paths, home, and root-as-final-token are denied.
 A single external-effect command asks **every time**, regardless of session
 intent. That is the accepted price of deciding it without a model: a `git push`
 in a session whose whole purpose is to push still asks.
+
+## Catastrophe gate
+
+`rm -rf` is only one way to wreck `/usr`. Any command that **modifies** a
+catastrophic directory is denied outright and never prompts — not even for a
+deliberate write into a system path.
+
+`catastrophe.paths` and `catastrophe.commands` in `bash-safety.jsonc` are listed
+separately and combined at match time, so adding one entry covers it against every
+entry of the other list and there is no generated rule file to keep in sync.
+
+- **paths**: `/`, `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/etc`, `/var`,
+  `/boot`, `/opt`, `/root`, `/sys`, `/proc`, `/dev`, `~`, `$HOME`.
+- **commands**: `rm`, `rmdir`, `unlink`, `shred`, `truncate`, `mv`, `cp`, `chmod`,
+  `chown`, `chgrp`, `chattr`, `ln`, `install`, `tee`, `dd`, `mkfs`, `wipefs`,
+  `mount`, `umount`, `blkdiscard`.
+- **forms**: `sed -i`, `-delete`, `-exec`, `--delete`, `of=` — multi-token forms
+  the command word alone cannot see, as in `find /usr -name '*.o' -delete`.
+
+Three precision rules keep the deny off prose and reads:
+
+- The command word is matched **at command position**, after skipping `sudo`,
+  `env`, `nohup`, `nice`, `ionice`, `time`, `timeout`, `xargs`, `command`, `exec`,
+  `setsid`, and `stdbuf` plus their flags, so
+  `git commit -m "fix rm handling in /etc"` is not blocked.
+- Paths are matched as **path tokens**, so `/usr` matches `/usr/share/x` but not
+  `/usrx`.
+- Redirection **targets are parsed**, so `cat /etc/hosts > /tmp/x` stays allowed
+  while `echo x > /etc/hosts` does not, and `2>/dev/null` is ignored.
+
+Measured: `chmod -R 000 /usr/share/…` is blocked with `'chmod' targets '/usr'`,
+while the same command under `/tmp` runs.
+
+The `rm -rf` globs in `pi-permissions.jsonc` remain as the declarative backstop for
+when the gate is off, so switching it off narrows catastrophe protection to
+recursive-force deletes.
 
 ## Credentials
 
@@ -188,9 +225,9 @@ is bounded at 64 entries and cleared each session.
 
 ## Toggling
 
-- `/bash-safety off` — session-scoped. Skips both the credential block and Jev,
-  leaving the declarative globs as the only bash gate. `/bash-safety on` restores
-  it. No file edit and no reload.
+- `/bash-safety off` — session-scoped. Skips the credential block, the
+  catastrophe gate, and Jev, leaving the declarative globs as the only bash gate.
+  `/bash-safety on` restores it. No file edit and no reload.
 - `"enabled": false` in `bash-safety.jsonc`, then `/bash-safety reload` — the same
   thing at load time.
 - `pi config` — disables the extension itself, persistently. Equivalent manual
@@ -219,6 +256,12 @@ so it prompts about half the time.
 - The interpreter-payload list is a fixed pattern set. `bash script.sh`,
   `python script.py`, and `make deploy` are single commands with no inline payload,
   so they are decided by the globs alone.
+- The catastrophe gate resolves one command word per segment, so a wrapper given a
+  value-taking flag hides it: `sudo -u root chmod 000 /etc/passwd` is not blocked.
+  `tar -xf x.tar -C /usr` is also missed, since `tar` is not in `commands`.
+- `cp` and `ln` are in `commands` because overwriting a system path is the risk, so
+  copying a file *out* of one of those directories (`cp /etc/hosts /tmp/`) is denied
+  even though it only reads.
 - No egress control is configured. A prompt-injected session can still exfiltrate
   whatever neither layer recognized.
 - The `powershell` tool is not gated by `bash-safety`.

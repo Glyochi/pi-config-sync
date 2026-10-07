@@ -6,8 +6,8 @@ cannot read, backed by the TypeSafe **Jev** classifier.
 Bash gating is split in two. Single commands with no shell syntax are decided
 instantly by the globs in [`../../pi-permissions.jsonc`](../../pi-permissions.jsonc);
 this extension runs *first* and handles only the rest — compound commands,
-interpreter payloads, and the credential hard block that must precede any
-classification. The full rationale is in
+interpreter payloads, the credential hard block, and the catastrophe gate, all of
+which must precede any classification. The full rationale is in
 [`../../PI-PERMISSIONS.md`](../../PI-PERMISSIONS.md); the rules Jev reads are in
 [`../../bash-safety.jsonc`](../../bash-safety.jsonc).
 
@@ -45,6 +45,7 @@ PROBE_TIMEOUT=600 PI_E2E_MODEL=opencode/deepseek-v4.1-flash \
 | `simple-not-classified` | `echo bash-safety-ok` runs, and its bash result carries **no** usage — so it was never classified |
 | `compound-classified` | `echo cost && echo probe` runs, and its bash result **carries** usage |
 | `hard-block` | `echo "$GITHUB_TOKEN" \| wc -c` returns the credential-gate reason |
+| `catastrophe` | `chmod -R 000 /usr/share/bash-safety-nonexistent` returns the catastrophe-gate reason — a non-`rm` modification of a system path |
 | `glob-ask` | `sudo true` is blocked with `requires approval, but no interactive UI is available` |
 | `glob-deny` | `rm -rf /usr/share/bash-safety-nonexistent` is blocked with `not permitted to run` |
 
@@ -61,6 +62,33 @@ never touches your real config.
 
 There is no scripted assertion on Jev's verdicts on purpose: they are
 probabilistic. Compare a run against the baseline below instead.
+
+## Catastrophe gate
+
+`rm -rf` is only one way to wreck `/usr`. Any command that **modifies** a
+catastrophic directory is denied outright and never prompts, even deliberately.
+`catastrophe.paths` and `catastrophe.commands` in `bash-safety.jsonc` are listed
+separately and combined at match time, so one new entry covers it against every
+entry of the other list.
+
+Denied, among others: `rm -rf /usr/…`, `chmod -R 000 /usr`, `chmod +x
+/usr/local/bin/tool`, `chown -R dev:dev /etc`, `mv /etc/hosts /tmp/`, `truncate -s
+0 /var/log/syslog`, `dd if=/dev/zero of=/dev/sda`, `mkfs.ext4 /dev/sda1`, `echo x >
+/etc/hosts`, `sed -i … /etc/hosts`, `find /usr … -delete`, `rsync --delete … /usr/`,
+`echo x | tee /etc/hosts`, and the same behind `sudo` or `timeout`.
+
+Allowed, and asserted so the deny stays honest: `rm -rf /workspace/build`,
+`rm -rf /tmp/x`, `ls -la /usr`, `cat /etc/hosts`, `cat /etc/hosts > /tmp/x`,
+`grep -i foo /etc/hosts`, `sed -n '1p' /etc/hosts`, `find /usr -name '*.o'`,
+`umount /mnt`, `echo rm /etc`, `cmd 2>/dev/null`, and
+`git commit -m "fix rm handling in /etc"` — prose is not a command position.
+
+Documented gaps: a wrapper with a value-taking flag hides the command
+(`sudo -u root chmod 000 /etc/passwd`), `tar -xf x.tar -C /usr` is not covered, and
+`cp`/`ln` are blunt enough that copying a file *out* of a system directory is denied
+too. The `rm -rf` globs in `pi-permissions.jsonc` remain the backstop when the gate
+is switched off, so switching it off narrows catastrophe protection to
+recursive-force deletes.
 
 ## The other half: the declarative globs
 
@@ -126,8 +154,9 @@ to the classifier, which returns `deny` on it.
 
 ## Toggling
 
-- `/bash-safety off` — session-scoped. Skips the credential block and Jev, leaving
-  the declarative globs as the only bash gate. `/bash-safety on` restores it.
+- `/bash-safety off` — session-scoped. Skips the credential block, the catastrophe
+  gate, and Jev, leaving the declarative globs as the only bash gate.
+  `/bash-safety on` restores it.
 - `"enabled": false` in `bash-safety.jsonc` + `/bash-safety reload` — the same at
   load time.
 - `pi config` — disables the extension persistently.
