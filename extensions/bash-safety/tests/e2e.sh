@@ -34,6 +34,14 @@ if [[ -n "${PI_E2E_MODEL:-}" ]]; then
 	PI_ARGS=(--model "$PI_E2E_MODEL")
 fi
 
+# pi-permission-system auto-approves `ask` while its own yoloMode is on, which would
+# silently defeat the glob-ask probe. Point it at a temp config with YOLO off instead
+# of touching the real one; denies are never relaxed by YOLO either way.
+cat >"$TMP_DIR/permission-system-config.json" <<'JSON'
+{ "enabled": true, "debug": false, "yoloMode": false }
+JSON
+export PI_PERMISSION_SYSTEM_CONFIG_PATH="$TMP_DIR/permission-system-config.json"
+
 # Print the text of every bash tool result in a `pi --mode json` transcript.
 extract_bash_results() {
 	python3 -c '
