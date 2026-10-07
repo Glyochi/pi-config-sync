@@ -1,11 +1,11 @@
 /**
- * Hard-block matcher checks for the bash-safety gate.
+ * Hard-block matcher checks for the permissions policy layer.
  *
  * These are the cases that decide whether a command ever reaches the classifier
  * at all. They are separate from lib.test.ts because they are about policy
  * coverage (which shapes of a command are caught) rather than pure logic.
  *
- * Run: node --experimental-strip-types ~/.pi/agent/extensions/bash-safety/tests/hardblock.test.ts
+ * Run: node --experimental-strip-types ~/.pi/agent/extensions/permissions/tests/hardblock.test.ts
  */
 
 import {

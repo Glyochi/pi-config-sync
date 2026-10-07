@@ -579,9 +579,9 @@ export function matchHardBlock(command: string, patterns: string[], exemptions: 
 /** Reason text returned to the model when the deterministic gate blocks a command. */
 export function hardBlockReason(pattern: string): string {
 	return (
-		`Blocked by the bash-safety credential gate: the command references "${pattern}". ` +
+		`Blocked by the permissions credential gate: this references "${pattern}". ` +
 		"Credential and secret paths are blocked deterministically and cannot be approved. " +
-		"If a non-secret file is needed, read it with a path that does not match the gate."
+		"If a non-secret file is needed, use a path that does not match the gate."
 	);
 }
 
@@ -721,9 +721,9 @@ export function matchCatastrophe(
 /** Reason text returned to the model when the catastrophe gate blocks a command. */
 export function catastropheReason(match: CatastropheMatch): string {
 	return (
-		`Blocked by the bash-safety catastrophe gate: '${match.command}' targets '${match.path}'. ` +
+		`Blocked by the permissions catastrophe gate: '${match.command}' targets '${match.path}'. ` +
 		"Modifying that directory is never approved, even deliberately. " +
-		"Work inside the working directories, or switch the gate off with /bash-safety off."
+		"Work inside the working directories, or switch YOLO on with /permissions yolo on."
 	);
 }
 
@@ -747,8 +747,8 @@ export function decide(verdict: Verdict, options: { hasUI: boolean; yolo: boolea
 			kind: "block",
 			reason:
 				verdict === "ask"
-					? "Blocked by the bash-safety gate: Jev was unsure whether this command fits the session task and no UI is available to confirm."
-					: "Blocked by the bash-safety gate: Jev disapproves of this command and no UI is available to confirm.",
+					? "Blocked by the permissions policy: Jev was unsure whether this action fits the session task and no UI is available to confirm."
+					: "Blocked by the permissions policy: Jev disapproves of this action and no UI is available to confirm.",
 		};
 	}
 	return verdict === "ask"

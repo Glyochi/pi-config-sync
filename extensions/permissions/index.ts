@@ -100,8 +100,9 @@ let state: State | undefined;
 
 // --- paths and config -----------------------------------------------------
 
+/** `PI_PERMISSIONS_CONFIG_PATH` points the policy at another file, for tests. */
 function configPath(): string {
-	return join(getAgentDir(), "permissions.jsonc");
+	return process.env.PI_PERMISSIONS_CONFIG_PATH ?? join(getAgentDir(), "permissions.jsonc");
 }
 
 function auditPath(): string {
