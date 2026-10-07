@@ -48,6 +48,7 @@ import {
 	modeFromEntries,
 	parseForwardedResponse,
 	parseThreshold,
+	permissionArgumentCompletion,
 	permissionCompletions,
 	permissionIndicator,
 	permissionsUsage,
@@ -554,6 +555,23 @@ eq("a threshold value is suggested", permissionCompletions("threshold 0.5")?.map
 eq("check offers tool names", permissionCompletions("check ba")?.map((item) => item.value), ["check bash "]);
 eq("an unknown subcommand has no suggestions", permissionCompletions("bogus"), null);
 eq("a finished argument has no suggestions", permissionCompletions("status "), null);
+
+// The wrapper pi's editor needs: Tab reaches file completion once the line has a space,
+// so these decide whether `/permissions` answers first.
+
+eq("a foreign command is left alone", permissionArgumentCompletion("/model gpt"), undefined);
+eq("the bare command is left to command-name completion", permissionArgumentCompletion("/permissions"), undefined);
+eq(
+	"after the command the subcommands are offered",
+	permissionArgumentCompletion("/permissions ")?.items.map((item) => item.label),
+	["status", "jev", "yolo", "threshold", "check", "mode", "reload"],
+);
+eq("the argument text is the completion prefix", permissionArgumentCompletion("/permissions jev o")?.prefix, "jev o");
+eq("the switch values are offered on tab", permissionArgumentCompletion("/permissions jev ")?.items.map((item) => item.value), ["jev on", "jev off"]);
+eq("a tool name is still completed", permissionArgumentCompletion("/permissions check ba")?.items.map((item) => item.value), ["check bash "]);
+eq("check's value goes to file completion", permissionArgumentCompletion("/permissions check bash "), undefined);
+eq("check's typed value goes to file completion", permissionArgumentCompletion("/permissions check bash r"), undefined);
+eq("nothing to suggest still answers, so files do not leak in", permissionArgumentCompletion("/permissions status ")?.items, []);
 
 const usage = permissionsUsage();
 check(

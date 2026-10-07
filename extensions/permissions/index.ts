@@ -47,6 +47,7 @@ import {
 	parseJsonc,
 	parseForwardedResponse,
 	parseThreshold,
+	permissionArgumentCompletion,
 	permissionCompletions,
 	permissionsUsage,
 	PLAN_BUILD_STATE_TYPE,
@@ -281,6 +282,32 @@ function syncStatus(ctx: ExtensionContext, current: State): void {
 		ctx.ui.setStatus("permissions", line);
 	} catch {
 		// No UI in this mode.
+	}
+}
+
+/**
+ * pi's editor routes Tab to file completion once the line has a space, which skips a
+ * command's own argument completions. Answering for `/permissions` here keeps Tab on the
+ * subcommands and their values; `check`'s value still falls through to files.
+ */
+function installArgumentCompletions(ctx: ExtensionContext): void {
+	try {
+		ctx.ui.addAutocompleteProvider((current) => ({
+			async getSuggestions(lines, cursorLine, cursorCol, options) {
+				const textBeforeCursor = (lines[cursorLine] ?? "").slice(0, cursorCol);
+				const ours = permissionArgumentCompletion(textBeforeCursor);
+				if (ours !== undefined) return ours;
+				return current.getSuggestions(lines, cursorLine, cursorCol, options);
+			},
+			applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+				return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+			},
+			shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
+				return current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true;
+			},
+		}));
+	} catch {
+		// No editor to attach to (print or RPC mode).
 	}
 }
 
@@ -696,6 +723,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const current = resetState(ctx, pi);
 		warnConfigOnce(ctx, current);
 		startForwardingWatcher(ctx);
+		installArgumentCompletions(ctx);
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {

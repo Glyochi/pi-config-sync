@@ -1321,6 +1321,32 @@ export function permissionCompletions(prefix: string): PermissionCompletion[] | 
 	return null;
 }
 
+/**
+ * The `/permissions` completion for the text before the cursor, or `undefined` when the
+ * cursor is not in a `/permissions` argument.
+ *
+ * pi's editor sends Tab to file completion as soon as the line contains a space, which
+ * skips a command's own `getArgumentCompletions`. The autocomplete wrapper calls this
+ * first so Tab still reaches the subcommands. `check`'s value is a command or path, so it
+ * returns `undefined` there and lets the file provider through.
+ */
+export function permissionArgumentCompletion(
+	textBeforeCursor: string,
+): { items: PermissionCompletion[]; prefix: string } | undefined {
+	const match = /^\/permissions\s([\s\S]*)$/.exec(textBeforeCursor);
+	if (match === null) return undefined;
+	const argument = match[1] as string;
+	const tokens = argument.trim().split(/\s+/).filter((token) => token !== "");
+	const trailingSpace = /\s$/.test(argument);
+	// `check`'s value is a command or path, so the file provider owns it.
+	if (tokens[0] === "check" && (tokens.length > 2 || (tokens.length === 2 && trailingSpace))) {
+		return undefined;
+	}
+	// An empty list is deliberate: it keeps Tab from falling through to file paths in a
+	// position that only takes a subcommand value.
+	return { items: permissionCompletions(argument) ?? [], prefix: argument };
+}
+
 // --- globs ----------------------------------------------------------------
 
 /** Whole-string glob: `*` becomes `.*`, `?` becomes `.`, a trailing ` *` optional. */
