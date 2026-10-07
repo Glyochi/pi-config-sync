@@ -75,11 +75,25 @@ when deciding.
 ## The credential hard block
 
 Case-insensitive substring matching over the whole command string against
-`auth.json`, `.pi/agent/auth`, `.git-credentials`, `.netrc`, `.npmrc`, `.ssh/`,
-`.aws/`, `.config/gh/`, `.docker/config.json`, `.env`, `token`, `secret`, and
+`auth.json`, `.pi/agent/auth`, `.git-credentials`, `.netrc`, `.npmrc`, `.ssh`,
+`.aws`, `.config/gh`, `.docker/config.json`, `.env`, `token`, `secret`, and
 `credential`, with exemptions for `.env.example`, `.env.sample`, and
 `.env.template`. A match returns `{ block: true }` before any classifier call.
 It never prompts, and YOLO never bypasses it.
+
+The directory patterns deliberately carry **no trailing slash**: a slash only
+matches a path that walks through the directory, so `find ~/.ssh -name 'id_*'`
+used to slip past while `cat ~/.ssh/id_rsa` was caught. Dropping the slash closes
+that form without touching ordinary CLI use — `aws s3 ls` and
+`gh workflow run` contain no `.aws` or `.config/gh` substring and still reach the
+classifier.
+
+`~/.pi/agent` itself is deliberately **not** a pattern. The only string that
+catches a globbed filename like `find ~/.pi/agent -name 'au*json'` is the agent
+directory itself, and hard-blocking every command that mentions it would make
+legitimate agent-config work impossible, with no prompt to override it. That case
+is left to the classifier, whose criteria now name credential relocation
+explicitly.
 
 This is the one risk the container does **not** mitigate. The agent process has
 to read `~/.pi/agent/auth/auth.json` to talk to the model, the container has
@@ -182,7 +196,11 @@ is implemented. YOLO is the supported way to let delegated work run.
 ## Known limitations
 
 - The bash hard block is best-effort string matching. `$VAR` indirection, base64,
-  and file reads through a helper script are not caught.
+  a globbed filename (`find ~/.pi/agent -name 'au*json'`), and file reads through
+  a helper script are not caught. Measured behaviour for that glob form: it passes
+  the hard block and the classifier returns `deny` (deny 0.68 against ask 0.26),
+  where before the criteria change it returned a near-tie `ask` that YOLO would
+  have auto-approved.
 - Bare words over-match: a command containing `token`, `secret`, or `credential`
   anywhere is blocked even when unrelated.
 - No egress control is configured. A prompt-injected session can still exfiltrate

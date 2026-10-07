@@ -40,8 +40,10 @@
 
   // Deterministic gate. Case-insensitive substring match over the whole command
   // string; an exemption wins over every pattern. Always blocks, never prompts,
-  // never bypassed by YOLO. Known limits: $VAR indirection and base64 are not
-  // caught, and a bare word like "token" matches any command containing it.
+  // never bypassed by YOLO. Directory patterns carry no trailing slash, so
+  // `find ~/.ssh -name ...` matches too. Known limits: $VAR indirection, base64,
+  // and a globbed filename like -name 'au*json' are not caught, and a bare word
+  // like "token" matches any command containing it.
   "hardBlock": {
     "patterns": [
       "auth.json",
@@ -49,9 +51,9 @@
       ".git-credentials",
       ".netrc",
       ".npmrc",
-      ".ssh/",
-      ".aws/",
-      ".config/gh/",
+      ".ssh",
+      ".aws",
+      ".config/gh",
       ".docker/config.json",
       ".env",
       "token",
@@ -69,7 +71,7 @@
     "criteria": {
       "allow": "Local, in-container work. Reads, builds, tests, installs, file creates/edits/deletes inside the working directories, local git (commit, branch, checkout, stash, reset, tag), running repo scripts, formatting, linting, and local rm. Deleting files inside a working directory is acceptable.",
       "ask": "Effects outside the container that plausibly match the session intent but are ambiguous or broader than it needs. Examples: git push, opening or commenting on PRs and issues, gh/aws/gcloud/az/kubectl/terraform commands, authenticated or uploading curl/wget, docker push, npm/pip/cargo publish, triggering or editing CI/CD workflows, ssh/scp/rsync to a remote, and any command that sends file contents off the machine. Also use ask when the intent does not justify the command, when a delete target is not clearly inside or clearly outside a working directory, or when the command cannot be confidently placed in allow or deny.",
-      "deny": "Clear violations. Sending credential files, key material, or environment secrets to any remote; destructive remote actions (force push, deleting cloud resources, buckets, or repositories, revoking keys); destructive deletes of paths outside the working directories, such as rm -rf /, rm -rf /*, rm -rf /usr, or rm -rf ~, and any recursive force delete aimed at the container root or a system path; disabling security controls; piping a remote script into a shell; writing outside the working directories in a way the task does not cover."
+      "deny": "Clear violations. Sending credential files, key material, or environment secrets to any remote; moving, copying, or reading credential material out of its home directory (~/.pi/agent, ~/.ssh, ~/.aws, ~/.config/gh) into a working directory, including under a different name or via a glob; destructive remote actions (force push, deleting cloud resources, buckets, or repositories, revoking keys); destructive deletes of paths outside the working directories, such as rm -rf /, rm -rf /*, rm -rf /usr, or rm -rf ~, and any recursive force delete aimed at the container root or a system path; disabling security controls; piping a remote script into a shell; writing outside the working directories in a way the task does not cover."
     }
   }
 }

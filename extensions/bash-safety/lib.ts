@@ -47,9 +47,10 @@ export const DEFAULT_HARD_BLOCK_PATTERNS: string[] = [
 	".git-credentials",
 	".netrc",
 	".npmrc",
-	".ssh/",
-	".aws/",
-	".config/gh/",
+	// Directory patterns carry no trailing slash so `find ~/.ssh -name ...` matches.
+	".ssh",
+	".aws",
+	".config/gh",
 	".docker/config.json",
 	".env",
 	"token",
@@ -96,6 +97,8 @@ export const DEFAULT_CRITERIA = {
 	].join("\n"),
 	deny: [
 		"Clear violations. Sending credential files, key material, or environment secrets to any remote;",
+		"moving, copying, or reading credential material out of its home directory (~/.pi/agent, ~/.ssh,",
+		"~/.aws, ~/.config/gh) into a working directory, including under a different name or via a glob;",
 		"destructive remote actions (force push, deleting cloud resources, buckets, or repositories,",
 		"revoking keys); destructive deletes of paths outside the working directories, such as rm -rf /,",
 		"rm -rf /*, rm -rf /usr, or rm -rf ~, and any recursive force delete aimed at the container root or",
