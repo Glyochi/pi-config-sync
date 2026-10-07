@@ -137,6 +137,7 @@ report() {
 	fi
 	local verdict="ran"
 	[[ "$result" == *"credential gate"* ]] && verdict="hard block"
+	[[ "$result" == *"catastrophe gate"* ]] && verdict="catastrophe blocked"
 	[[ "$result" == *"requires approval"* ]] && verdict="glob ask blocked"
 	[[ "$result" == *"not permitted to run"* ]] && verdict="glob deny blocked"
 	[[ "$result" == *"Blocked by the bash-safety gate"* ]] && verdict="jev blocked"
