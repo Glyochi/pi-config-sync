@@ -6,7 +6,9 @@ the reasoning reaches every machine.
 - [`permissions.jsonc`](./permissions.jsonc) — the whole policy: switches, mode
   behaviour, hard blocks, the declarative bash rules, and the rules Jev reads.
 - `extensions/permissions/` — the extension itself, with its own
-  [README](./extensions/permissions/README.md) and tests.
+  [README](./extensions/permissions/README.md), its
+  [behaviour reference](./extensions/permissions/BEHAVIOR.md) for looking up what
+  happens to a given command, and its tests.
 - Command: `/permissions`.
 
 This replaced two things: `pi-permission-system` (removed from `settings.json`) and
@@ -122,6 +124,19 @@ intent**. Three things count:
   `xargs … sh -c`;
 - an **opaque command word** — a segment whose first word is `$VAR`, `$(…)`, or a
   backtick, which nothing can be read from.
+
+A destructive command is exempt when it only touches **specific paths inside the working
+directories**. `rm /tmp/a.txt`, `rm -rf /workspace/build`, `rm -rf build`, and
+`rmdir /tmp/dir` are decidable, so they cost no classifier call even with Jev on — and
+they stay decidable rather than depending on a model's mood, which matters because Jev
+is inconsistent here: measured, it calls `rm /tmp/a.txt` `deny` (0.42 against 0.37 ask)
+while calling `rm -rf /workspace/build` `allow` (0.71).
+
+Targets that are not specific, or not contained, still reach the classifier: a glob
+(`rm -rf /workspace/*`), the working directory itself (`rm -rf /workspace`), a path
+outside them (`rm -rf /srv/data`), a parent escape (`rm -rf ../other`), or an
+unresolvable target (`rm -rf $DIR`). The session `cwd` counts as a working directory, so
+relative targets resolve inside it.
 
 **Structure is deliberately not a reason to classify.** The globs match the whole
 command string, so an external-effect verb is caught whether or not the command is

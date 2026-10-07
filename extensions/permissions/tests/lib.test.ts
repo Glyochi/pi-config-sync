@@ -760,6 +760,45 @@ eq(
 	false,
 );
 
+// --- behaviour reference --------------------------------------------------
+// BEHAVIOR.md is the quick lookup, so its tables are executed here rather than
+// trusted: a change to the engine that invalidates the doc fails the suite.
+
+const behavior = readFileSync(join(here, "..", "BEHAVIOR.md"), "utf8");
+
+function behaviorRows(heading: string): Array<[string, string]> {
+	const start = behavior.indexOf(heading);
+	if (start === -1) return [];
+	const rows: Array<[string, string]> = [];
+	for (const line of behavior.slice(start).split("\n").slice(1)) {
+		if (line.startsWith("#")) break;
+		const match = /^\|\s*`(.+?)`\s*\|\s*([a-z]+)\s*\|$/.exec(line.trim());
+		if (match !== null) rows.push([(match[1] as string).replace(/\\\|/g, "|"), match[2] as string]);
+	}
+	return rows;
+}
+
+const buildRows = behaviorRows("### Build mode, Jev on, YOLO off");
+const planRows = behaviorRows("### Plan mode, Jev on, YOLO off");
+check("the behaviour reference has a build table", buildRows.length >= 20);
+check("the behaviour reference has a plan table", planRows.length >= 4);
+
+for (const [command, documented] of buildRows) {
+	const jevOn = resolveDeterministic({ toolName: "bash", command, mode: "build", switches: on, policy: basePolicy, cwd: CWD });
+	eq(`documented build outcome: ${command}`, jevOn.kind, documented);
+	// Jev off turns every classify row into a plain allow and changes nothing else.
+	const jevOff = resolveDeterministic({ toolName: "bash", command, mode: "build", switches: off, policy: basePolicy, cwd: CWD });
+	eq(`documented jev-off outcome: ${command}`, jevOff.kind, documented === "classify" ? "allow" : documented);
+	// YOLO allows everything, hard blocks included.
+	const yoloOn = resolveDeterministic({ toolName: "bash", command, mode: "build", switches: yolo, policy: basePolicy, cwd: CWD });
+	eq(`documented yolo outcome: ${command}`, yoloOn.kind, "allow");
+}
+
+for (const [command, documented] of planRows) {
+	const plan = resolveDeterministic({ toolName: "bash", command, mode: "plan", switches: on, policy: basePolicy, cwd: CWD });
+	eq(`documented plan outcome: ${command}`, plan.kind, documented);
+}
+
 // --- report --------------------------------------------------------------
 
 if (failures.length > 0) {

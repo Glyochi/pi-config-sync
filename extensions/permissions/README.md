@@ -7,6 +7,7 @@ cannot read, and only while the Jev switch is on.
 
 Policy: [`../../permissions.jsonc`](../../permissions.jsonc). Rationale:
 [`../../PI-PERMISSIONS.md`](../../PI-PERMISSIONS.md). Command: `/permissions`.
+Quick lookup for "what happens to this command": [`BEHAVIOR.md`](./BEHAVIOR.md).
 
 This extension replaced `pi-permission-system` and absorbed the former `bash-safety`
 extension.
@@ -18,6 +19,7 @@ extension.
 | `tests/lib.test.ts` | The policy engine: config normalisation, mode resolution, the switch matrix, tool categories, the glob table, both matchers, the Jev payload, and the forwarding protocol |
 | `tests/hardblock.test.ts` | Which command shapes the credential matcher catches and which it must not |
 | `tests/e2e.sh` | End-to-end probes through real headless Pi sessions |
+| `BEHAVIOR.md` | The quick lookup: the pipeline in order and a command table per switch and mode. Its tables are executed by `tests/lib.test.ts`, so they cannot drift from the engine. |
 
 ## The two switches
 
@@ -59,7 +61,8 @@ PROBE_TIMEOUT=600 PI_E2E_MODEL=opencode/deepseek-v4.1-flash \
 | `compound-jevv-off` | `echo a && echo b` runs with no usage |
 | `benign-chain-jevv-on` | the same command with Jev on still runs with **no** usage — structure is not a reason to classify |
 | `chained-external-effect` | `git push origin main && echo done` asks through the globs, with no classifier call |
-| `destructive-jevv-on` | `rm -rf /tmp/permissions-probe` reaches the classifier: either it ran and carries usage, or it was blocked with a Jev reason |
+| `delete-in-working-dir` | `rm -rf /tmp/permissions-probe` runs with Jev **on** and no usage — a specific target inside a working directory is decidable |
+| `delete-outside-working-dir` | `rm -rf /srv/permissions-probe` reaches the classifier: either it ran and carries usage, or it was blocked with a Jev reason |
 | `destructive-jevv-off` | the same command with Jev off is neither classified nor blocked |
 | `hard-block` | `echo token` returns the credential-gate reason |
 | `yolo-disables-blocks` | the same command under YOLO does **not** return it |
@@ -96,6 +99,11 @@ Reads (`read`, `grep`, `find`, `ls`) are deterministic only. Effectful tools (`b
   command word like `$VAR`. Structure is not a reason: the globs match the whole
   string, so a chained external-effect command is decided without the classifier, and
   benign chains stay free.
+- **Working-directory deletes are decidable.** `rm /tmp/a.txt`, `rm -rf
+  /workspace/build`, and `rm -rf build` touch specific paths inside the working
+  directories, so they are allowed without a classifier call even with Jev on. A glob
+  (`rm -rf /workspace/*`), the working directory itself, a path outside them, a parent
+  escape, or an unresolvable target still reaches Jev.
 - **Doom loop**: the third identical call in a session asks.
 
 Approvals are one-shot — `Allow once` or `Reject`, nothing stored. YOLO is the answer for
