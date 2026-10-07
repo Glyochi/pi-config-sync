@@ -32,7 +32,13 @@ export const PLAN_ARTIFACT_DIR = "plans";
 export interface PermissionsConfig {
 	enabled: boolean;
 	/** The semantic layer. Off means no classifier calls at all. */
-	jev: { enabled: boolean; model: { provider: string; id: string }; timeoutMs: number };
+	jev: {
+		enabled: boolean;
+		model: { provider: string; id: string };
+		timeoutMs: number;
+		/** Below this, a verdict is not trusted and becomes an ask. */
+		confidenceThreshold: number;
+	};
 	/** Auto-approves every ask AND disables the credential and catastrophe hard blocks. */
 	yolo: boolean;
 	/** What each mode does to a mutation (write, edit, shell mutation, effectful MCP). */
@@ -273,6 +279,7 @@ export const DEFAULT_CONFIG: PermissionsConfig = {
 		enabled: false,
 		model: { provider: "opencode", id: "jev-1.13" },
 		timeoutMs: 10_000,
+		confidenceThreshold: 0.3,
 	},
 	yolo: false,
 	modes: { plan: { mutations: "deny" }, build: { mutations: "allow" } },
@@ -316,6 +323,10 @@ function asNumber(value: unknown, fallback: number, minimum: number): number {
 
 function asBoolean(value: unknown, fallback: boolean): boolean {
 	return typeof value === "boolean" ? value : fallback;
+}
+
+function asUnitInterval(value: unknown, fallback: number): number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : fallback;
 }
 
 function asStringArray(value: unknown, fallback: string[]): string[] {
@@ -431,6 +442,7 @@ export function normalizeConfig(raw: unknown): PermissionsConfig {
 				id: asString(jevModel.id, DEFAULT_CONFIG.jev.model.id),
 			},
 			timeoutMs: asNumber(jev.timeoutMs, DEFAULT_CONFIG.jev.timeoutMs, 1),
+			confidenceThreshold: asUnitInterval(jev.confidenceThreshold, DEFAULT_CONFIG.jev.confidenceThreshold),
 		},
 		yolo: asBoolean(raw.yolo, DEFAULT_CONFIG.yolo),
 		modes: {
@@ -901,15 +913,24 @@ export function describeCheckDecision(input: {
 	return `${prefix} allow — the deterministic rules decided it, so Jev is not consulted`;
 }
 
-/** The line when the pipeline does consult the classifier. */
+/**
+ * The line when the pipeline does consult the classifier. A verdict below the threshold
+ * is named as such rather than presented as the outcome, since the ask it becomes is
+ * the threshold's doing, not Jev's.
+ */
 export function describeCheckJev(input: {
 	toolName: string;
 	verdict: Verdict;
 	confidence: number | undefined;
 	probabilities: Record<string, number> | undefined;
 	hasUI: boolean;
+	threshold?: number | undefined;
 }): string {
-	const action = decide(input.verdict, { hasUI: input.hasUI, yolo: false });
+	const effective =
+		input.threshold === undefined
+			? { verdict: input.verdict, downgraded: false }
+			: effectiveVerdict(input.verdict, input.confidence, input.probabilities, input.threshold);
+	const action = decide(effective.verdict, { hasUI: input.hasUI, yolo: false });
 	const what =
 		action.kind === "run"
 			? "it would run"
@@ -918,7 +939,11 @@ export function describeCheckJev(input: {
 				: "it would be blocked, since there is no UI";
 	const confidence = input.confidence === undefined ? "n/a" : input.confidence.toFixed(2);
 	const distribution = formatDistribution(input.probabilities);
-	return `permissions: ${input.toolName} -> ${input.verdict} (Jev, confidence ${confidence})${distribution === "" ? "" : `  [${distribution}]`} — ${what}`;
+	const suffix = distribution === "" ? "" : `  [${distribution}]`;
+	if (effective.downgraded) {
+		return `permissions: ${input.toolName} -> ask (Jev said ${input.verdict} at confidence ${confidence}, below the ${input.threshold} threshold)${suffix} — ${what}`;
+	}
+	return `permissions: ${input.toolName} -> ${effective.verdict} (Jev, confidence ${confidence})${suffix} — ${what}`;
 }
 
 /** The line when the classifier could not answer, so the gate fails open. */
@@ -1213,6 +1238,46 @@ export function hasOpaqueCommandWord(command: string): boolean {
 
 export type JudgementReason = "destructive" | "interpreter" | "opaque";
 
+/**
+ * The confidence to judge a verdict by: the reported value, else the probability of the
+ * chosen label. `undefined` means it cannot be judged, which counts as low.
+ */
+export function verdictConfidence(
+	confidence: number | undefined,
+	probabilities: Record<string, number> | undefined,
+	verdict: Verdict,
+): number | undefined {
+	if (typeof confidence === "number" && Number.isFinite(confidence)) return confidence;
+	const fallback = probabilities?.[verdict];
+	return typeof fallback === "number" && Number.isFinite(fallback) ? fallback : undefined;
+}
+
+/** Whether a verdict is below the trust threshold, so it becomes an ask. */
+export function isLowConfidence(
+	confidence: number | undefined,
+	probabilities: Record<string, number> | undefined,
+	verdict: Verdict,
+	threshold: number,
+): boolean {
+	const value = verdictConfidence(confidence, probabilities, verdict);
+	return value === undefined || value < threshold;
+}
+
+/**
+ * The verdict after the threshold. A low-confidence verdict becomes an ask, which under
+ * YOLO auto-approves, so "allow under YOLO" needs no special case. `downgraded` is true
+ * only when the threshold changed an answer, not when Jev already said ask.
+ */
+export function effectiveVerdict(
+	verdict: Verdict,
+	confidence: number | undefined,
+	probabilities: Record<string, number> | undefined,
+	threshold: number,
+): { verdict: Verdict; downgraded: boolean } {
+	const low = isLowConfidence(confidence, probabilities, verdict, threshold);
+	return { verdict: low ? "ask" : verdict, downgraded: low && verdict !== "ask" };
+}
+
 /** A glob character in an unquoted target, so the target is not a specific path. */
 const GLOB_CHARACTERS = /[*?[]/;
 
@@ -1325,7 +1390,7 @@ export type Decision =
 	| { kind: "block"; reason: string }
 	| { kind: "ask"; reason: string }
 	/** `reason` records why the classifier was needed, for the audit log. */
-	| { kind: "classify"; reason: JudgementReason | "tool" }; 
+	| { kind: "classify"; reason: JudgementReason };
 
 export interface SwitchState {
 	jev: boolean;
@@ -1354,9 +1419,10 @@ export interface DeterministicInput {
  *    `edit` are deliberately left to pi-plan-build, which already blocks them there
  *    and already exempts the plan Markdown that Plan mode has to be able to revise.
  * 4. Declarative bash globs.
- * 5. Jev, for effectful tools only, and for a shell command only when it hides its
- *    intent (`needsJudgement`). Structure is not a reason to classify: the globs
- *    match the whole string, so a chained external-effect command is already decided.
+ * 5. Jev, for shell commands only, and only when one hides its intent
+ *    (`needsJudgement`). Structure is not a reason to classify: the globs match the
+ *    whole string, so a chained external-effect command is already decided. Every other
+ *    tool is trusted.
  */
 export function resolveDeterministic(input: DeterministicInput): Decision {
 	const { toolName, mode, switches, policy } = input;
@@ -1400,16 +1466,16 @@ export function resolveDeterministic(input: DeterministicInput): Decision {
 		}
 	}
 
-	if (category === "effectful" && switches.jev) {
-		if (isShellTool(toolName)) {
-			// A read-only chain is free, and so is a command whose intent a glob can read.
-			if (input.command === undefined) return { kind: "allow" };
-			if (isReadOnlyChain(input.command)) return { kind: "allow" };
-			const reason = needsJudgement(input.command, policy, input.cwd);
-			if (reason === undefined) return { kind: "allow" };
-			return { kind: "classify", reason };
-		}
-		return { kind: "classify", reason: "tool" };
+	// Jev judges shell commands only. Every other tool is trusted, with the deterministic
+	// layers still applying to it: the credential hard block, the Plan-mode rule, and
+	// pi-plan-build's own refusal of write and edit in Plan mode.
+	if (isShellTool(toolName) && switches.jev) {
+		// A read-only chain is free, and so is a command whose intent a glob can read.
+		if (input.command === undefined) return { kind: "allow" };
+		if (isReadOnlyChain(input.command)) return { kind: "allow" };
+		const reason = needsJudgement(input.command, policy, input.cwd);
+		if (reason === undefined) return { kind: "allow" };
+		return { kind: "classify", reason };
 	}
 
 	return { kind: "allow" };

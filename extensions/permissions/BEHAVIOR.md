@@ -15,7 +15,7 @@ are re-checked against the engine by `tests/lib.test.ts`, so they cannot drift.
 | 3 | Catastrophe gate | block — a shell command that *modifies* a catastrophic directory | `catastrophe` |
 | 4 | Mode | block — in Plan mode, a shell mutation or an effectful MCP call | `modes` |
 | 5 | Bash globs | allow / ask / deny — whole string, last match wins | `bash` |
-| 6 | Jev | allow / ask / deny — only when the command hides its intent | `jev`, `destructive` |
+| 6 | Jev | allow / ask / deny — only for a shell command that hides its intent, and a verdict below the confidence threshold becomes ask | `jev`, `destructive` |
 | 7 | Doom loop | ask — the third identical call in a session | `doomLoop` |
 | 8 | Nothing matched | allow | |
 
@@ -67,7 +67,12 @@ no classifier call is made. With **YOLO on** every row becomes `allow`, includin
 
 ## What the classifier sees
 
-Jev is consulted only when a command hides its intent, which is one of:
+Jev judges **shell commands only**. Everything else is trusted — `write`, `edit`, `mcp`
+never reach it — with the deterministic layers still applying: the credential hard block
+checks a file tool's target, and Plan mode refuses effectful MCP.
+
+Within shell commands it is consulted only when the command hides its intent, which is
+one of:
 
 - a **destructive verb** — `rm`, `mv`, `cp`, `chmod`, `chown`, `chgrp`, `chattr`, `ln`,
   `install`, `tee`, `dd`, `truncate`, `shred`, `rmdir`, `unlink`, `mkfs`, `wipefs`,
@@ -78,8 +83,10 @@ Jev is consulted only when a command hides its intent, which is one of:
   `xargs … sh -c`;
 - an **opaque command word** — a segment starting with `$VAR`, `$(…)`, or a backtick.
 
-Everything else, including effectful non-shell tools (`write`, `edit`, `mcp`), is
-decided without it.
+A verdict is then judged against `jev.confidenceThreshold` (default `0.3`): at or above
+it the verdict stands, below it the verdict becomes `ask`, and a missing confidence
+counts as below. Since YOLO auto-approves every ask, that is what makes a shaky verdict
+run under YOLO and prompt without it.
 
 ## What is never the classifier's job
 
@@ -111,6 +118,7 @@ decided without it.
 | External-effect asks, pipe-to-shell | `bash` |
 | Plan mode behaviour | `modes.plan.mutations` |
 | The switches' defaults | `jev.enabled`, `yolo` |
+| How much a verdict is trusted | `jev.confidenceThreshold` |
 | Doom loop | `doomLoop.threshold`, `doomLoop.state` |
 | What Jev is asked | `rules.instructions`, `rules.criteria`, `rules.environment` |
 | The audit log | `audit.enabled` |

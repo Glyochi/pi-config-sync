@@ -33,6 +33,7 @@ import {
 	describeCheckDecision,
 	describeCheckFailure,
 	describeCheckJev,
+	effectiveVerdict,
 	effectiveWorkingDirectories,
 	FORWARDING_AGENT_DIR_ENV_KEY,
 	isMcpTool,
@@ -533,15 +534,22 @@ async function gate(
 		if (outcome.usage !== undefined) setBounded(current.pendingUsage, event.toolCallId, outcome.usage, PENDING_USAGE_LIMIT);
 	}
 
-	const action = decide(cached.verdict, { hasUI: ctx.hasUI, yolo: false });
+	// A verdict below the threshold is not trusted: it becomes an ask, which YOLO then
+	// auto-approves. The audit keeps the raw verdict and the confidence so a threshold
+	// prompt is distinguishable from one Jev actually asked for.
+	const threshold = current.config.jev.confidenceThreshold;
+	const { verdict, downgraded } = effectiveVerdict(cached.verdict, cached.confidence, cached.probabilities, threshold);
+	const action = decide(verdict, { hasUI: ctx.hasUI, yolo: false });
 	audit({
 		tool: event.toolName,
 		mode: current.mode,
 		switches: current.switches,
-		decision: cached.verdict,
+		decision: verdict,
 		source,
 		judgement,
 		confidence: cached.confidence,
+		threshold,
+		downgraded,
 	});
 	if (action.kind === "run") return undefined;
 	if (action.kind === "block") {
@@ -549,14 +557,14 @@ async function gate(
 		return { block: true, reason: action.reason };
 	}
 	const detail = confirmMessage(
-		cached.verdict,
+		verdict,
 		capText(command ?? targetPath ?? event.toolName, current.config.maxCommandChars),
 		cached.confidence,
 		cached.probabilities,
 	);
 	const approved = await requestApproval(action.title, detail, event.toolCallId, ctx);
 	if (approved) return undefined;
-	return { block: true, reason: `Rejected by the user after a Jev '${cached.verdict}' verdict.` };
+	return { block: true, reason: `Rejected by the user after a Jev '${verdict}' verdict.` };
 }
 
 async function resolveAsk(
@@ -768,6 +776,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 							confidence: outcome.confidence,
 							probabilities: outcome.probabilities,
 							hasUI: ctx.hasUI,
+							threshold: current.config.jev.confidenceThreshold,
 						}),
 						outcome.verdict === "allow" ? "info" : "warning",
 					);

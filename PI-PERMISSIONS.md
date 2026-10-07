@@ -113,8 +113,13 @@ before, are counted per session by tool name and arguments; the third one asks.
 
 ## Jev
 
-**Scope.** Effectful tools only, and for a shell command only when it **hides its
-intent**. Three things count:
+**Scope.** Shell commands only (`bash`, `powershell`). Every other tool is trusted —
+`write`, `edit` and MCP never reach the classifier — with the deterministic layers still
+applying to them: the credential hard block checks a file tool's target path, Plan mode
+refuses effectful MCP, and `pi-plan-build` refuses `write` and `edit` in Plan mode.
+
+Within shell commands Jev is consulted only when one **hides its intent**. Three things
+count:
 
 - a **destructive verb** or flag form — `rm`, `mv`, `cp`, `chmod`, `chown`, `chgrp`,
   `chattr`, `ln`, `install`, `tee`, `dd`, `truncate`, `shred`, `rmdir`, `unlink`,
@@ -137,6 +142,18 @@ Targets that are not specific, or not contained, still reach the classifier: a g
 outside them (`rm -rf /srv/data`), a parent escape (`rm -rf ../other`), or an
 unresolvable target (`rm -rf $DIR`). The session `cwd` counts as a working directory, so
 relative targets resolve inside it.
+
+**Confidence threshold.** A verdict is judged against `jev.confidenceThreshold`, default
+`0.3`. The effective confidence is the reported `confidence`, else the probability of the
+chosen label, else unknown; anything below the threshold — including unknown — becomes an
+`ask`. It applies to every verdict, so a low-confidence `allow` prompts too, and a
+low-confidence `deny` prompts with the unsure framing rather than the disapproval one.
+
+Because YOLO auto-approves every ask, a shaky verdict runs under YOLO and prompts without
+it, and no special case is needed for that. The audit line keeps the raw verdict, the
+confidence, the threshold and whether it was downgraded, so a prompt caused by the
+threshold is distinguishable from one Jev actually asked for. Measured over 25 classifier
+decisions, 11 fall below 0.3 while the confident cluster sits at 0.73 and above.
 
 **Structure is deliberately not a reason to classify.** The globs match the whole
 command string, so an external-effect verb is caught whether or not the command is

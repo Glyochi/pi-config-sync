@@ -19,7 +19,13 @@
   "jev": {
     "enabled": false,
     "model": { "provider": "opencode", "id": "jev-1.13" },
-    "timeoutMs": 10000
+    "timeoutMs": 10000,
+
+    // A verdict at or above this is taken as given; below it, the verdict is not
+    // trusted and becomes an ask, so YOLO runs it and non-YOLO prompts. A missing
+    // confidence counts as below. Measured over 25 classifier decisions, 11 fall
+    // below 0.3 while the confident cluster sits at 0.73 and above.
+    "confidenceThreshold": 0.3
   },
   "yolo": false,
 

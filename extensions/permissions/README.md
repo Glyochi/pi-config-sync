@@ -95,8 +95,9 @@ switches, every `check` shape, and the usage line.
 
 ## What the engine decides
 
-Reads (`read`, `grep`, `find`, `ls`) are deterministic only. Effectful tools (`bash`,
-`powershell`, `write`, `edit`, `mcp`, `mcp__*`) can reach Jev. Plan tools are neutral.
+Reads (`read`, `grep`, `find`, `ls`) are deterministic only. Jev judges **shell commands
+only** (`bash`, `powershell`); `write`, `edit` and MCP are trusted, with the
+deterministic layers still applying to them. Plan tools are neutral.
 
 - **Hard blocks**: credential patterns, substring matched, blocked outright for shell
   commands and asked about for path-bearing file tools.
@@ -105,11 +106,12 @@ Reads (`read`, `grep`, `find`, `ls`) are deterministic only. Effectful tools (`b
   command-position aware, and redirection targets are parsed.
 - **Declarative bash globs**: whole-string, last-match-wins. A single command is decided
   here for free, so `git push` asks and `ls` does not.
-- **Jev**: for effectful non-shell tools, and for a shell command only when it hides
-  its intent — a destructive verb or flag form, an interpreter payload, or an opaque
-  command word like `$VAR`. Structure is not a reason: the globs match the whole
-  string, so a chained external-effect command is decided without the classifier, and
-  benign chains stay free.
+- **Jev**: for a shell command only, and only when it hides its intent — a destructive
+  verb or flag form, an interpreter payload, or an opaque command word like `$VAR`.
+  Structure is not a reason: the globs match the whole string, so a chained
+  external-effect command is decided without the classifier, and benign chains stay
+  free. A verdict below `jev.confidenceThreshold` (default `0.3`) is not trusted and
+  becomes an ask, so it runs under YOLO and prompts without it.
 - **Working-directory deletes are decidable.** `rm /tmp/a.txt`, `rm -rf
   /workspace/build`, and `rm -rf build` touch specific paths inside the working
   directories, so they are allowed without a classifier call even with Jev on. A glob

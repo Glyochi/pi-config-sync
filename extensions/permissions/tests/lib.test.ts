@@ -34,7 +34,10 @@ import {
 	destructiveTargetsAreContained,
 	describeCheckFailure,
 	describeCheckJev,
+	effectiveVerdict,
 	hasDestructiveIntent,
+	isLowConfidence,
+	verdictConfidence,
 	forwardingPaths,
 	hasInterpreterPayload,
 	hasOpaqueCommandWord,
@@ -596,7 +599,11 @@ eq("a piped remote script asks with jev off too", decideShell("curl -sS https://
 eq("a destructive verdict records its reason", (decideShell("rm -rf /workspace", on) as { reason?: string }).reason, "destructive");
 eq("an interpreter verdict records its reason", (decideShell("bash -c 'x'", on) as { reason?: string }).reason, "interpreter");
 eq("an opaque verdict records its reason", (decideShell("$CMD --version", on) as { reason?: string }).reason, "opaque");
-eq("a non-shell effectful tool records the tool reason", (resolveDeterministic({ toolName: "write", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy, cwd: CWD }) as { reason?: string }).reason, "tool");
+eq(
+	"a non-shell effectful tool carries no judgement reason",
+	(resolveDeterministic({ toolName: "write", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy, cwd: CWD }) as { reason?: string }).reason,
+	undefined,
+);
 
 // --- needsJudgement ------------------------------------------------------
 
@@ -657,10 +664,15 @@ check("an interpreter payload is detected", hasInterpreterPayload("bash -c 'x'")
 check("a plain command has no interpreter payload", !hasInterpreterPayload("bash script.sh"));
 eq("an assignment prefix is skipped when finding the command word", commandWordOf("FOO=bar ls"), "ls");
 eq("a bare assignment has no command word", commandWordOf("FOO=bar"), undefined);
-eq("write is classified with jev on", resolveDeterministic({ toolName: "write", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy, cwd: CWD }).kind, "classify");
-eq("edit is classified with jev on", resolveDeterministic({ toolName: "edit", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy, cwd: CWD }).kind, "classify");
+// Jev judges shell commands only: the other tools are trusted, and the deterministic
+// layers still apply to them.
+eq("write is trusted with jev on", resolveDeterministic({ toolName: "write", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy, cwd: CWD }).kind, "allow");
+eq("edit is trusted with jev on", resolveDeterministic({ toolName: "edit", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy, cwd: CWD }).kind, "allow");
+eq("a write to a credential path still asks", decidePath("write", "/home/dev/" + basePolicy.hardBlock.patterns[2], on).kind, "ask");
+eq("plan mode still refuses effectful mcp", resolveDeterministic({ toolName: "mcp__x__y", mode: "plan", switches: on, policy: basePolicy, cwd: CWD }).kind, "block");
 eq("read is never classified", resolveDeterministic({ toolName: "read", targetPath: "/workspace/x", mode: "build", switches: on, policy: basePolicy, cwd: CWD }).kind, "allow");
-eq("mcp is classified with jev on", resolveDeterministic({ toolName: "mcp__x__y", mode: "build", switches: on, policy: basePolicy, cwd: CWD }).kind, "classify");
+eq("mcp is trusted with jev on", resolveDeterministic({ toolName: "mcp__x__y", mode: "build", switches: on, policy: basePolicy, cwd: CWD }).kind, "allow");
+eq("powershell still reaches the classifier", resolveDeterministic({ toolName: "powershell", command: "rm -rf /srv/data", mode: "build", switches: on, policy: basePolicy, cwd: CWD }).kind, "classify");
 eq("a plan tool is never classified", resolveDeterministic({ toolName: "plan_task", mode: "build", switches: on, policy: basePolicy, cwd: CWD }).kind, "allow");
 
 eq("plan mode blocks a shell mutation", decideShell("rm -rf /workspace/build", off, "plan").kind, "block");
@@ -760,6 +772,43 @@ eq(
 	"command" in buildJevPayload({ toolName: "write", mode: "build", intent: snapshotIntent({}, 100), environment: "env", maxCommandChars: 100, maxPreviewChars: 10 }),
 	false,
 );
+
+// --- confidence threshold -------------------------------------------------
+// A verdict below the threshold is not trusted: it becomes an ask, which YOLO then
+// auto-approves, so "allow under YOLO" needs no special case.
+
+const threshold = basePolicy.jev.confidenceThreshold;
+eq("the default threshold is 0.3", threshold, 0.3);
+eq("the reported confidence is used", verdictConfidence(0.8, { allow: 0.1 }, "allow"), 0.8);
+eq("the label probability is the fallback", verdictConfidence(undefined, { deny: 0.7 }, "deny"), 0.7);
+eq("no confidence anywhere is undefined", verdictConfidence(undefined, undefined, "deny"), undefined);
+eq("a missing label probability is undefined", verdictConfidence(undefined, { ask: 0.9 }, "deny"), undefined);
+eq("a confidence at the threshold is trusted", isLowConfidence(0.3, undefined, "deny", 0.3), false);
+eq("just below the threshold is low", isLowConfidence(0.29, undefined, "deny", 0.3), true);
+eq("above the threshold is not low", isLowConfidence(0.9, undefined, "allow", 0.3), false);
+eq("a missing confidence counts as low", isLowConfidence(undefined, undefined, "allow", 0.3), true);
+eq("the fallback is judged too", isLowConfidence(undefined, { deny: 0.9 }, "deny", 0.3), false);
+
+eq("a confident allow stands", effectiveVerdict("allow", 0.9, undefined, 0.3), { verdict: "allow", downgraded: false });
+eq("a low-confidence allow becomes ask", effectiveVerdict("allow", 0.2, undefined, 0.3), { verdict: "ask", downgraded: true });
+eq("a confident deny stands", effectiveVerdict("deny", 0.8, undefined, 0.3), { verdict: "deny", downgraded: false });
+eq("a low-confidence deny becomes ask", effectiveVerdict("deny", 0.1, undefined, 0.3), { verdict: "ask", downgraded: true });
+eq("an ask is not marked as downgraded", effectiveVerdict("ask", 0.1, undefined, 0.3), { verdict: "ask", downgraded: false });
+eq("a missing confidence downgrades", effectiveVerdict("allow", undefined, undefined, 0.3), { verdict: "ask", downgraded: true });
+eq("the boundary is inclusive", effectiveVerdict("deny", 0.3, undefined, 0.3), { verdict: "deny", downgraded: false });
+eq("one step below is not", effectiveVerdict("deny", 0.299, undefined, 0.3), { verdict: "ask", downgraded: true });
+eq("a config threshold round-trips", normalizeConfig({ jev: { confidenceThreshold: 0.75 } }).jev.confidenceThreshold, 0.75);
+eq("an out-of-range threshold falls back", normalizeConfig({ jev: { confidenceThreshold: 5 } }).jev.confidenceThreshold, 0.3);
+
+// The check line names the threshold's doing rather than presenting it as Jev's.
+const downgradedLine = describeCheckJev({ toolName: "bash", verdict: "deny", confidence: 0.2, probabilities: { allow: 0.1, ask: 0.3, deny: 0.6 }, hasUI: true, threshold });
+check("a downgraded line reports ask", downgradedLine.includes("bash -> ask"));
+check("a downgraded line names the raw verdict", downgradedLine.includes("Jev said deny"));
+check("a downgraded line names the threshold", downgradedLine.includes("below the 0.3 threshold"));
+check("a downgraded line would prompt", downgradedLine.includes("it would prompt for approval"));
+const trustedLine = describeCheckJev({ toolName: "bash", verdict: "deny", confidence: 0.9, probabilities: { allow: 0.05, ask: 0.05, deny: 0.9 }, hasUI: true, threshold });
+check("a trusted line reports the verdict", trustedLine.includes("bash -> deny (Jev, confidence 0.90)"));
+check("a trusted line is not downgraded", !trustedLine.includes("below the"));
 
 // --- check argument quoting -----------------------------------------------
 // A command with spaces is quoted on the command line, and pi passes the argument text

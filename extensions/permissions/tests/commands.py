@@ -23,8 +23,10 @@ CASES = [
     ("check workdir delete", '/permissions check bash "rm /tmp/a.txt"', "bash -> allow — the deterministic rules decided it", None),
     ("check glob wipe with jev off", '/permissions check bash "rm -rf /workspace/*"', "bash -> allow", None),
     ("jev on", "/permissions jev on", "jev=on", None),
-    # The verdict is probabilistic, so assert only that the classifier was consulted.
-    ("check outside workdir", '/permissions check bash "rm -rf /srv/data"', "(Jev,", None),
+    # The verdict, and so the exact phrasing, depends on the classifier's confidence:
+    # at or above the threshold it reports the verdict, below it names the downgrade.
+    # Assert only that the classifier was consulted.
+    ("check outside workdir", '/permissions check bash "rm -rf /srv/data"', "Jev", None),
     ("check catastrophe", '/permissions check bash "rm -rf /usr/share/x"', "catastrophe gate", None),
     ("check read", "/permissions check read /workspace/AGENTS.md", "read -> allow", None),
     ("yolo on", "/permissions yolo on", "yolo=on", None),
