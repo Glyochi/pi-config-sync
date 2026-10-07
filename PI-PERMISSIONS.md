@@ -109,9 +109,21 @@ before, are counted per session by tool name and arguments; the third one asks.
 
 ## Jev
 
-**Scope.** Effectful tools only, and for shell tools only when the command is compound
-or an interpreter payload. A single command and a read-only chain were already decided
-by the globs, so they cost no classifier call.
+**Scope.** Effectful tools only, and for shell tools only when a glob cannot read the
+command. That means a compound command, an interpreter payload, or a **destructive
+verb** — `rm`, `mv`, `chmod`, `dd`, `tee`, `truncate`, `shred`, `cp`, `ln`, `install`,
+`chown`, `chgrp`, `chattr`, `rmdir`, `unlink`, `mkfs`, `wipefs`, `mount`, `umount`,
+`blkdiscard` — or a destructive flag form (`sed -i`, `-delete`, `-exec`, `--delete`,
+`of=`).
+
+A read-only chain and a single command that changes nothing are decided by the globs,
+so they cost no classifier call. A destructive verb is the case a glob cannot judge:
+`rm -rf /workspace` is one command, but whether it fits the task is a question only the
+model can answer. Measured, Jev calls it `deny` (allow 0.02 · ask 0.25 · deny 0.73),
+which the deterministic layer alone would have allowed.
+
+The consequence to know: this only bites while Jev is on. With Jev off — the default —
+a destructive single command is still allowed, because nothing else judges it.
 
 **Payload.** Tool name, mode, the command or target path, a capped preview of the
 content or arguments, the session intent (session name, original task or latest
@@ -172,7 +184,8 @@ their behaviour rather than changing it. `special.doom_loop: ask` is reimplement
   reads.
 - Jev's verdicts are probabilistic, and its failure mode is fail-open.
 - Forwarding is implemented but has not been exercised against a live subagent.
-- With YOLO on there is no floor at all.
+- With YOLO on there is no floor at all, and with Jev off a destructive single command
+  is allowed outright: the deterministic layer has no opinion on `rm -rf /workspace`.
 - The interpreter-payload list is a fixed pattern set; `bash script.sh` is a single
   command and is decided by the globs alone.
 - `PI_PERMISSIONS_CONFIG_PATH` points the policy at another file. It exists for the

@@ -58,6 +58,8 @@ PROBE_TIMEOUT=600 PI_E2E_MODEL=opencode/deepseek-v4.1-flash \
 | `simple-not-classified` | `echo probe-ok` runs and its result carries **no** usage, so it was never classified |
 | `compound-jevv-off` | `echo a && echo b` runs with no usage |
 | `compound-jevv-on` | the same command, with Jev switched on, runs **with** usage |
+| `destructive-jevv-on` | `rm -rf /tmp/permissions-probe` reaches the classifier: either it ran and carries usage, or it was blocked with a Jev reason |
+| `destructive-jevv-off` | the same command with Jev off is neither classified nor blocked |
 | `hard-block` | `echo token` returns the credential-gate reason |
 | `yolo-disables-blocks` | the same command under YOLO does **not** return it |
 | `plan-blocks-mutation` | a compound command in Plan mode returns the read-only reason |
@@ -88,8 +90,9 @@ Reads (`read`, `grep`, `find`, `ls`) are deterministic only. Effectful tools (`b
   command-position aware, and redirection targets are parsed.
 - **Declarative bash globs**: whole-string, last-match-wins. A single command is decided
   here for free, so `git push` asks and `ls` does not.
-- **Jev**: only for compound or interpreter shell commands, and for effectful non-shell
-  tools.
+- **Jev**: for effectful non-shell tools, and for shell commands a glob cannot judge —
+  compound commands, interpreter payloads, and destructive verbs like `rm`, `mv`,
+  `chmod`, or `dd`. A read-only chain and a benign single command stay free.
 - **Doom loop**: the third identical call in a session asks.
 
 Approvals are one-shot — `Allow once` or `Reject`, nothing stored. YOLO is the answer for
