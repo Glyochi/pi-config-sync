@@ -46,6 +46,9 @@
 !PI-QUESTION-TOOLS.md
 !PI-QUESTION-TOOLS.md/
 !PI-QUESTION-TOOLS.md/**
+!bash-safety.jsonc
+!bash-safety.jsonc/
+!bash-safety.jsonc/**
 # hard denylist — re-ignored even inside allowed dirs
 **/logs/
 auth*

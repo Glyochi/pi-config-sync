@@ -1,29 +1,31 @@
 # Pi permission policy rationale
 
-Why `~/.pi/agent/pi-permissions.jsonc` is shaped the way it is. This document is
-tracked by pi-config-sync (`git-sync.jsonc` -> `extraPaths`) so the reasoning
-travels with the policy to every machine.
+Why the two synced policy files are shaped the way they are. Both travel with
+pi-config-sync, so the reasoning reaches every machine.
 
-Policy file: [`pi-permissions.jsonc`](./pi-permissions.jsonc)
+- [`pi-permissions.jsonc`](./pi-permissions.jsonc) — the `pi-permission-system`
+  policy: file tools, MCP, skills, and special checks.
+- [`bash-safety.jsonc`](./bash-safety.jsonc) — the `bash-safety` extension: the
+  Jev-classified bash gate and its credential hard block.
+
 Extension: `pi-permission-system` (`~/.pi/agent/npm/node_modules/pi-permission-system`)
+and `bash-safety` (`~/.pi/agent/extensions/bash-safety`).
 
 ## The model
 
-**Allow by default. Ask only for file deletes, `sudo`, and credential access.
-Hard-deny recursive force deletes.**
+**Two layers, split by what can actually be decided by pattern matching.**
 
-- `defaultPolicy.tools` / `bash` / `mcp` / `skills` = `allow`
-- Reads and writes run freely, including the `write`/`edit` tools and shell
-  create verbs (`>`, `cp`, `mv`, `touch`, `mkdir`, `mktemp`, `ln`, `tee`, `dd`,
-  `tar -x`, `unzip`)
-- Ask: delete verbs (`rm`, `rmdir`, `unlink`, `shred`, `truncate`,
-  `find -delete`, `git clean`, `git rm`, `git reset --hard`, `git restore`),
-  `sudo`, and any read or write touching credentials
-- Deny: `rm -rf`, `rm -fr`, `rm -r` (declared last)
+- `pi-permission-system`: allow by default. Ask when a path-bearing file tool
+  (`read`, `write`, `edit`, `grep`) touches credentials. `special.external_directory`
+  is `allow`; `doom_loop` stays `ask`. Its `bash` section is a single
+  `"*": "allow"` — bash is **not** glob-gated.
+- `bash-safety`: every bash command the model issues is classified by the
+  TypeSafe **Jev** classifier against an editable rule prompt. Credential paths
+  are hard-blocked deterministically before the classifier is consulted.
 
-## Why this shape
+## Why bash moved to a classifier
 
-### The container already removes most of the blast radius
+### The container removes the blast radius that globs were protecting
 
 Pi runs inside the `linux-quick-setup` Docker container (see
 `docker-compose.yaml`). The relevant facts:
@@ -33,101 +35,132 @@ Pi runs inside the `linux-quick-setup` Docker container (see
 - `/` is an ephemeral overlay: package installs, `/etc` edits, and dotfiles
   vanish when the container is recreated and never touch the host.
 - The only persistent mounts are `/workspace` (the host project directory,
-  normally git-tracked) and the `pi-auth`, `pi-sessions`, `pi-state` named
-  volumes.
+  normally git-tracked) and the `pi-auth`, `pi-sessions`, `pi-state` volumes.
 
-So the classic reason for a read-only/guarded shell - protecting the host OS -
-does not apply. Most destructive mistakes are recoverable: `/workspace` is
-normally a git repo, and the container itself is disposable.
+So the classic reason for a guarded shell — protecting the host OS — does not
+apply, and neither does the delete question: untracked files in a disposable
+container are cheap, and a wrong `rm` costs less than a confirmation prompt.
 
-### Why deletes still ask
+### The remaining risk is semantic, not lexical
 
-Deleting is the one operation that is expensive even when the tree is
-git-tracked: untracked and ignored files (`.env`, data, build artifacts, local
-DBs) are gone for good, and a wrong `rm` can cost more time than a one-tap
-confirmation. Asking on delete keeps the common case frictionless while putting
-a speed bump on the irreversible one.
+What is actually expensive is an effect *outside* the container: a push, a cloud
+or CI/CD mutation, an authenticated upload. Whether one is justified depends on
+what the session was asked to do, which no glob can know. `git push` in a
+"land this fix" session is routine; the same command in a "read this file and
+summarize it" session is a red flag.
 
-`rm -rf` / `rm -fr` / `rm -r` are denied outright because a recursive-force
-delete can wipe the mounted project tree in one command, and the deny is cheap
-insurance against a mistake or a prompt-injected instruction.
+Jev is given the command, `cwd`, the repo's remote and branch, the session intent
+(session name, original task, latest user message), and an environment blurb, and
+returns one of `allow` / `ask` / `deny`.
 
-### Why `sudo` asks
+## What each verdict does
 
-`sudo` cannot do anything in this container (uid 1000, `CapEff=0`), so a prompt
-is sufficient; a hard deny would add no safety and only hide the intent.
+| Verdict | UI, YOLO off | UI, YOLO on | No UI (`print`/`json`, subagents) |
+|---|---|---|---|
+| `allow` | runs | runs | runs |
+| `ask` | prompts — "Jev is unsure" | runs, with a session-once notice | blocked |
+| `deny` | prompts — "Jev disapproves, be careful" | prompts | blocked |
+| hard block | blocked | blocked | blocked |
+| classifier failure | runs, with a warning | runs, with a warning | runs |
 
-### Why credentials ask on both read and write
+`deny` is an emphasis, not a hard stop, whenever a UI exists: the user can still
+approve the command. Only the credential hard block is absolute.
+
+## The credential hard block
+
+Case-insensitive substring matching over the whole command string against
+`auth.json`, `.pi/agent/auth`, `.git-credentials`, `.netrc`, `.npmrc`, `.ssh/`,
+`.aws/`, `.config/gh/`, `.docker/config.json`, `.env`, `token`, `secret`, and
+`credential`, with exemptions for `.env.example`, `.env.sample`, and
+`.env.template`. A match returns `{ block: true }` before any classifier call.
+It never prompts, and YOLO never bypasses it.
 
 This is the one risk the container does **not** mitigate. The agent process has
 to read `~/.pi/agent/auth/auth.json` to talk to the model, the container has
 outbound network access, and "re-authenticate" is not the same as "rotate a
-leaked key" - a leaked key stays valid until revoked.
+leaked key" — a leaked key stays valid until revoked.
 
-Gated paths (the "broader set"): `~/.pi/agent/auth/**`, `~/.git-credentials`,
-`~/.netrc`, `~/.npmrc`, `~/.ssh/**`, `~/.aws/**`, `~/.config/gh/**`,
-`~/.docker/config.json`, plus name patterns `*token*`, `*secret*`,
-`*credential*`, `*.env*`.
+The pattern list is also a built-in default, so a missing or unparsable
+`bash-safety.jsonc` still blocks credentials.
 
-Two layers implement this:
+## Why the file-tool credential asks stay
 
-1. **Tool resource keys** for the path-bearing built-ins, e.g.
-   `"read:*/.pi/agent/auth/*": "ask"`. Built-in tools resolve a target of the
-   form `<action>:<normalized-absolute-path>` and match it against `tools`
-   patterns in reverse declaration order, so a later credential `ask` beats the
-   earlier `"*": "allow"`. Covered actions: `read`, `write`, `edit`, `grep`.
-2. **Bash command patterns** (`*auth.json*`, `*.git-credentials*`, `*.env*`, ...)
-   because shell commands do not go through the tool resource path.
+`read:*/.pi/agent/auth/*`, `read:*/.git-credentials*`, and the rest of the
+`tools` rules gate the path-bearing built-ins. Those calls never reach the bash
+gate, so the two layers are complementary: bash-shaped checks cannot see
+`read`/`write`/`edit`/`grep`, and a command-string classifier cannot see a tool's
+target path.
 
-### Why chains, pipes, and redirection are allowed
+## Why chains, pipes, and redirection are allowed
 
 `;`, `&&`, `||`, `|`, `$( )`, backticks, and `>` are not separately gated. The
-blast radius is disposable, and blocking chaining produced far more prompts than
-safety. The cost is that a mutating segment can ride along with an allowed read
-command; the delete and credential patterns are written as "anywhere" globs so
-they still match inside a chain.
+classifier receives the whole command string as one blob, which is exactly the
+input it is good at reading. Blocking chaining produced far more prompts than
+safety.
 
-### Why `special.external_directory` is allow
+## YOLO
 
-`external_directory` is evaluated before the normal tool check. Leaving it
-`ask` would prompt on every read outside the working directory. With `allow`,
-external reads fall through to the normal tool rule (`allow`), while the
-credential resource keys still govern the sensitive paths. `doom_loop` stays
-`ask`.
+YOLO is a single shared switch. `bash-safety` reads and writes
+`globalThis.__piPermissionSystem`, the runtime API `pi-permission-system`
+publishes, so `/permission-system` and `/bash-safety yolo` flip the same state
+(persisted in `extensions/pi-permission-system/config.json`).
 
-## How the matching works (and why ordering matters)
+Under YOLO, `ask` auto-runs in every mode, including without a UI — that is the
+deliberate escape hatch for delegated or unattended work. `deny` and the hard
+block are unaffected.
 
-- Bash rules are globs matched against the **whole command string**, with
-  **last-matching-rule-wins** (`src/wildcard-matcher.ts`, `src/bash-filter.ts`).
-  `*` matches any characters, including `;`, `|`, and newlines.
-- Because of last-match-wins, the `rm -rf` deny rules are declared **last** so
-  they beat the `*rm *` ask. Credential patterns are declared after the delete
-  asks; all of those are `ask`, so their relative order does not matter.
-- The config is JSONC: comments and trailing commas are supported. The
-  extension only **reads** this file (the `/permission-system` modal writes the
-  extension `config.json`, not the policy), so comments are safe.
+## Failure handling
+
+`classify()` never rejects, so the gate checks `stopReason` and `errorMessage`
+itself. A failure (error, timeout, missing credentials, rate limit) allows the
+command, notifies when a UI exists, and counts toward a per-session breaker: after
+three consecutive failures the gate stops classifying for the rest of the session
+and says so once. A success resets the counter.
+
+Fail-open is deliberate. `pi-permission-system`'s file-tool rules remain in force,
+and the credential hard block is deterministic and unaffected by the breaker, so a
+classifier outage degrades the gate rather than stopping work.
+
+## No UI, and subagents
+
+In `print`/`json` mode and inside subagents there is no way to prompt, so `ask`
+and `deny` both block with distinct reasons and no subagent permission forwarding
+is implemented. YOLO is the supported way to let delegated work run.
+
+## How the matching works in `pi-permissions.jsonc`
+
+- `tools` patterns are matched against resource keys of the form
+  `<action>:<normalized-absolute-path>` with **last-matching-rule-wins**, so a
+  later credential `ask` beats the earlier `"*": "allow"`.
+- `*` matches any characters, including `;`, `|`, and newlines.
+- The config is JSONC: comments and trailing commas are supported.
+  `pi-permission-system` only **reads** this file (the `/permission-system` modal
+  writes the extension `config.json`), so comments are safe.
 
 ## Known limitations
 
-- Bash credential patterns are best-effort string matches. `cat
-  ~/.pi/agent/auth/auth.json` is caught; base64 or `$VAR` indirection is not.
-- No egress control is configured. A prompt-injected session can still read and
-  exfiltrate keys over the network. If that matters, restrict the container's
-  network or use scoped, short-lived keys.
-- `mv` deletes its source but is allowed, per the create/delete decision.
-- Credential gating covers `read`/`write`/`edit`/`grep` plus bash; `find`/`ls`
+- The bash hard block is best-effort string matching. `$VAR` indirection, base64,
+  and file reads through a helper script are not caught.
+- Bare words over-match: a command containing `token`, `secret`, or `credential`
+  anywhere is blocked even when unrelated.
+- No egress control is configured. A prompt-injected session can still exfiltrate
+  whatever the gate did not recognize over the network.
+- The classifier is a network call: one round trip per bash command (identical
+  commands are served from a bounded per-session cache). At `jev-1.13` pricing
+  this is about $0.042 per 1M input tokens.
+- The `powershell` tool is not gated by `bash-safety`.
+- The file-tool credential rules cover `read`/`write`/`edit`/`grep`; `find`/`ls`
   metadata on credential paths is not gated.
-- `rm -Rf`, `rm -rF`, and similar flag spellings fall through to the `*rm *`
-  ask, not the deny.
-- Redirection is allowed, so `> existing-file` overwrites without asking.
+- `mv` deletes its source but is allowed, and `> existing-file` overwrites without
+  asking; both now fall to the classifier's judgement when run through bash.
 
 ## How to change the policy
 
-1. Edit `~/.pi/agent/pi-permissions.jsonc`.
-2. Validate: the file must parse as JSONC and satisfy
-   `schemas/permissions.schema.json` in the extension package.
-3. `/reload` (or restart Pi) so the extension re-reads the policy.
-4. pi-config-sync commits and pushes the change automatically on the next sync;
-   run `/gitsync sync` to do it immediately.
-
-Keep broad rules first and specific overrides later; put `deny` rules last.
+1. Bash behaviour and rules: edit `~/.pi/agent/bash-safety.jsonc`, then run
+   `/bash-safety reload`. Inspect with `/bash-safety status` and dry-run a command
+   with `/bash-safety check <command>`.
+2. File-tool, MCP, skill, and special behaviour: edit
+   `~/.pi/agent/pi-permissions.jsonc`, then `/reload` (or restart Pi).
+3. Validate: the file must parse as JSONC.
+4. pi-config-sync commits and pushes the change on the next sync; run
+   `/gitsync sync` to do it immediately.

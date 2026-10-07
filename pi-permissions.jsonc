@@ -1,11 +1,9 @@
 {
   // Global pi-permission-system policy.
   // Rationale and design notes: see PI-PERMISSIONS.md (synced by pi-config-sync).
-  // Model: allow by default. Ask only for file deletes, sudo, and credential
-  // access. Deny recursive force deletes.
-  //
-  // Bash rules match the WHOLE command string with last-matching-rule-wins, so
-  // deny rules are declared last to beat the delete ask rules.
+  // Model: allow by default. Bash is delegated to the bash-safety extension
+  // (Jev-classified, with a deterministic credential hard block); this file
+  // only asks for credential access through the path-bearing file tools.
 
   "defaultPolicy": {
     "tools": "allow",
@@ -73,43 +71,12 @@
     "grep:*credential*": "ask"
   },
 
+  // Bash is owned by the bash-safety extension: every command is classified by
+  // Jev against the rules in bash-safety.jsonc, and credential paths are
+  // hard-blocked deterministically. Local deletes are intentionally allowed
+  // (the container root is an ephemeral overlay).
   "bash": {
-    "*": "allow",
-
-    // ---- File deletes ask ----
-    "*rm *": "ask",
-    "*rmdir *": "ask",
-    "*unlink *": "ask",
-    "*shred *": "ask",
-    "*truncate *": "ask",
-    "*find *-delete*": "ask",
-    "*git clean*": "ask",
-    "*git rm *": "ask",
-    "*git reset --hard*": "ask",
-    "*git restore*": "ask",
-
-    // ---- sudo asks ----
-    "*sudo *": "ask",
-
-    // ---- Credentials ask (read or write) ----
-    "*auth.json*": "ask",
-    "*.pi/agent/auth*": "ask",
-    "*.git-credentials*": "ask",
-    "*.netrc*": "ask",
-    "*.npmrc*": "ask",
-    "*.ssh/*": "ask",
-    "*.aws/*": "ask",
-    "*.config/gh/*": "ask",
-    "*.docker/config.json*": "ask",
-    "*.env*": "ask",
-    "*token*": "ask",
-    "*secret*": "ask",
-    "*credential*": "ask",
-
-    // ---- Hard deny: recursive force delete (declared last so it wins) ----
-    "*rm -rf *": "deny",
-    "*rm -fr *": "deny",
-    "*rm -r *": "deny"
+    "*": "allow"
   },
 
   "mcp": {

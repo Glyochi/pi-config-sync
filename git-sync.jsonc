@@ -7,5 +7,6 @@
   // pi-plan-build question dialog never competes with the rpiv ask_user_question
   // tool, the only question tool this setup wants.
   // PI-QUESTION-TOOLS.md documents why that is the only question tool.
-  "extraPaths": ["pi-permissions.jsonc", "PI-PERMISSIONS.md", "keybindings.json", "pi-plan-build.json", "PI-QUESTION-TOOLS.md"]
+  // bash-safety.jsonc holds the Jev bash-gate rules, model, and knobs.
+  "extraPaths": ["pi-permissions.jsonc", "PI-PERMISSIONS.md", "keybindings.json", "pi-plan-build.json", "PI-QUESTION-TOOLS.md", "bash-safety.jsonc"]
 }
