@@ -29,19 +29,49 @@ ENTITY_SHAPE = "box"
 DATATYPE_SHAPE = "diamond"
 UNKNOWN_NODE_SHAPE = "ellipse"
 
-# Importance tier -> color. Fixed ordered fallback palette covers arbitrary
-# extra tiers deterministically (assigned in order of first appearance).
-ENTITY_COLORS = {
-    "Critical": "red",
-    "Significant": "orange",
-    "Peripheral": "gray",
-}
-FALLBACK_PALETTE = [
+# Entity importance palette, highest -> lowest: up to 10 light backgrounds so the
+# default black node label stays readable. The names are shown in the legend.
+IMPORTANCE_PALETTE = [
+    ("light red", "#F4A3A3"),
+    ("light orange", "#F6C08B"),
+    ("light gray", "#D4D4D4"),
+    ("light yellow", "#EAD98A"),
+    ("light green", "#A9DBA4"),
+    ("light teal", "#9BD6CE"),
+    ("light violet", "#C3B4E8"),
+    ("light pink", "#E8B4D8"),
+    ("light brown", "#D8BFA8"),
+    ("light olive", "#D6D69B"),
+]
+
+ENTITY_DEFAULT_COLOR = "#D4D4D4"
+
+# Canonical importance order, highest -> lowest. The scale the map skill starts
+# with (Critical / Significant / Peripheral) is pinned first; any other tier the
+# user steers in is ranked after these, in order of first appearance.
+IMPORTANCE_ORDER = [
+    "critical",
+    "very high",
+    "high",
+    "significant",
+    "medium",
+    "moderate",
+    "peripheral",
+    "low",
+    "minor",
+    "trivial",
+]
+
+# Unknown node types get a deterministic light background from this palette.
+NODE_FALLBACK_PALETTE = [color for _, color in IMPORTANCE_PALETTE]
+
+DATATYPE_COLOR = "#A9CCEF"
+
+# Unknown edge types keep saturated colors so the lines stay visible on white.
+EDGE_FALLBACK_PALETTE = [
     "purple", "teal", "brown", "pink", "olive",
     "cyan", "magenta", "lime", "navy", "maroon",
 ]
-
-DATATYPE_COLOR = "blue"
 
 # Known edge types: (color, dash pattern). vis-network edges use `dashes`
 # (false = solid, or an array of dash/gap pixel lengths), NOT `style` — `style`
@@ -54,12 +84,10 @@ COMPOSED_OF_COLOR = "#A020F0"
 COMPOSED_OF_DASHES = [2, 6]
 UNKNOWN_EDGE_DASHES = False
 
-# Hex colors render correctly but read poorly in the legend; the palette names
-# above are already English, so only the hex values need mapping.
-COLOR_NAMES = {
-    "#2B7CE9": "blue",
-    "#A020F0": "purple",
-}
+# Hex colors render correctly but read poorly in the legend, so they are mapped
+# to plain English names. The importance palette carries its own names.
+COLOR_NAMES = {"#2B7CE9": "blue", "#A020F0": "purple", DATATYPE_COLOR: "light blue"}
+COLOR_NAMES.update({color: name for name, color in IMPORTANCE_PALETTE})
 
 OPTIONS = """
 {
@@ -316,26 +344,54 @@ def parse_relationships(lines):
 # Styling
 # ---------------------------------------------------------------------------
 
-_seen_tiers = {}
+_tier_rank = {}
+_tier_colors = {}
+
+
+def importance_rank(importance):
+    """Sort key: canonical scale position, then order of first appearance."""
+    key = importance.strip().lower()
+    if key in IMPORTANCE_ORDER:
+        return IMPORTANCE_ORDER.index(key)
+    if key not in _tier_rank:
+        _tier_rank[key] = len(IMPORTANCE_ORDER) + len(_tier_rank)
+    return _tier_rank[key]
+
+
+def order_importance_tiers(tiers):
+    """Sort the tiers present highest -> lowest and assign palette colors.
+
+    Colors are handed out in importance order, so the top tier always takes the
+    first palette color and the scale reads as a gradient (up to 10 tiers).
+    """
+    unique = {}
+    for tier in tiers:
+        if tier and tier.strip():
+            unique.setdefault(tier.strip().lower(), tier.strip())
+    ordered = sorted(unique.values(), key=importance_rank)
+    for i, tier in enumerate(ordered):
+        _tier_colors[tier.lower()] = IMPORTANCE_PALETTE[i % len(IMPORTANCE_PALETTE)]
+    return ordered
 
 
 def entity_color(importance):
-    """Deterministic color for an importance tier."""
+    """Light background for an importance tier (black label stays readable)."""
     if importance is None:
-        return "gray"
-    if importance in ENTITY_COLORS:
-        return ENTITY_COLORS[importance]
-    if importance not in _seen_tiers:
-        _seen_tiers[importance] = FALLBACK_PALETTE[
-            len(_seen_tiers) % len(FALLBACK_PALETTE)
-        ]
-    return _seen_tiers[importance]
+        return ENTITY_DEFAULT_COLOR
+    entry = _tier_colors.get(importance.strip().lower())
+    return entry[1] if entry else ENTITY_DEFAULT_COLOR
 
 
-def fallback_color(type_name):
-    """Deterministic color for an unknown type, keyed on a stable hash."""
-    idx = zlib.crc32(type_name.encode("utf-8")) % len(FALLBACK_PALETTE)
-    return FALLBACK_PALETTE[idx]
+def fallback_node_color(type_name):
+    """Deterministic light background for an unknown node type."""
+    idx = zlib.crc32(type_name.encode("utf-8")) % len(NODE_FALLBACK_PALETTE)
+    return NODE_FALLBACK_PALETTE[idx]
+
+
+def fallback_edge_color(type_name):
+    """Deterministic saturated color for an unknown edge type."""
+    idx = zlib.crc32(type_name.encode("utf-8")) % len(EDGE_FALLBACK_PALETTE)
+    return EDGE_FALLBACK_PALETTE[idx]
 
 
 def node_style(node_type, fields):
@@ -343,7 +399,7 @@ def node_style(node_type, fields):
         return {"shape": ENTITY_SHAPE, "color": entity_color(fields.get("Importance"))}
     if node_type == "DataType":
         return {"shape": DATATYPE_SHAPE, "color": DATATYPE_COLOR}
-    return {"shape": UNKNOWN_NODE_SHAPE, "color": fallback_color(node_type)}
+    return {"shape": UNKNOWN_NODE_SHAPE, "color": fallback_node_color(node_type)}
 
 
 def edge_style(edge_type):
@@ -353,7 +409,7 @@ def edge_style(edge_type):
         return {"color": INTERACT_COLOR, "dashes": INTERACT_DASHES}
     if edge_type == "Composed of":
         return {"color": COMPOSED_OF_COLOR, "dashes": COMPOSED_OF_DASHES}
-    return {"color": fallback_color(edge_type), "dashes": UNKNOWN_EDGE_DASHES}
+    return {"color": fallback_edge_color(edge_type), "dashes": UNKNOWN_EDGE_DASHES}
 
 
 def dashes_label(dashes):
@@ -490,7 +546,7 @@ def build_graph(entities, datatypes, relationships):
     return net, node_types, edge_types
 
 
-def build_legend(node_types, edge_types):
+def build_legend(node_types, edge_types, entity_tiers):
     parts = [
         '<div style="position: fixed; top: 10px; left: 10px; background: rgba(255,255,255,0.95);'
         ' border: 1px solid #ccc; padding: 10px; z-index: 1000; font-family: sans-serif;'
@@ -500,10 +556,12 @@ def build_legend(node_types, edge_types):
     ]
     for t, s in sorted(node_types.items()):
         if t == "Entity":
-            parts.append(
-                "Entity (box, color by importance: Critical=red, "
-                "Significant=orange, Peripheral=gray)<br>"
+            tiers = ", ".join(
+                "{}={}".format(tier, color_label(entity_color(tier)))
+                for tier in entity_tiers
             )
+            detail = "box, color by importance: " + tiers if tiers else "box"
+            parts.append("Entity ({})<br>".format(detail))
         else:
             parts.append(
                 "{} ({} {})<br>".format(t, s["shape"], color_label(s["color"]))
@@ -538,13 +596,16 @@ def main():
     datatypes = parse_datatypes(datatype_lines)
     relationships = parse_relationships(relationship_lines)
 
+    entity_tiers = order_importance_tiers(
+        e["fields"].get("Importance") for e in entities
+    )
     net, node_types, edge_types = build_graph(entities, datatypes, relationships)
     net.set_options(OPTIONS)
     net.write_html(output_path, open_browser=False)
 
     with open(output_path, "r", encoding="utf-8") as f:
         html = f.read()
-    legend = build_legend(node_types, edge_types)
+    legend = build_legend(node_types, edge_types, entity_tiers)
     injected = legend + "\n" + PHYSICS_DISABLE_JS + "\n" + INTERACTION_JS + "\n</body>"
     html = html.replace("</body>", injected)
     with open(output_path, "w", encoding="utf-8") as f:
