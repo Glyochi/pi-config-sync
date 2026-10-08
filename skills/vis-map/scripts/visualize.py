@@ -472,11 +472,15 @@ TOOLTIP_CSS = """
 </style>
 """
 
-# Node hover popover. Uses vis-network's own hit-testing (getNodeAt on the
-# canvas) but draws our own box, so it can be width-capped and left in place long
-# enough to select the text. The box is anchored beside the node, not under the
-# cursor: a box under the cursor both chases the mouse and covers the node, which
-# breaks hit-testing and makes the hover feel random.
+# Node hover popover. Uses vis-network's own hit-testing (getNodeAt) but draws our
+# own box, so it can be width-capped and left in place long enough to select the
+# text. The box is anchored beside the node, not under the cursor: a box under the
+# cursor both chases the mouse and covers the node, which breaks hit-testing.
+#
+# Visibility is decided by one document-level mousemove handler that looks at the
+# pointer position, rather than by mouseenter/mouseleave on the canvas and the box.
+# A missed leave event (pointer crossing onto the box, or leaving the window) used
+# to leave the box stranded on screen.
 POPOVER_JS = """
 <script type="text/javascript">
 var NODE_DESCRIPTIONS = __DESCRIPTIONS__;
@@ -501,9 +505,10 @@ var NODE_DESCRIPTIONS = __DESCRIPTIONS__;
     box.style.display = "none";
   }
 
+  // Short grace period so the mouse can travel from the node onto the box.
   function scheduleHide() {
     clearTimeout(hideTimer);
-    hideTimer = setTimeout(hide, 400);
+    hideTimer = setTimeout(hide, 300);
   }
 
   // Sit just outside the node, so the box never covers the node and never sits
@@ -540,16 +545,18 @@ var NODE_DESCRIPTIONS = __DESCRIPTIONS__;
     place(nodeId);
   }
 
-  box.addEventListener("mouseenter", function () { clearTimeout(hideTimer); });
-  box.addEventListener("mouseleave", scheduleHide);
-
-  canvas.addEventListener("mousemove", function (e) {
+  document.addEventListener("mousemove", function (e) {
+    if (box.contains(e.target)) {
+      clearTimeout(hideTimer);
+      return;
+    }
     var nodeId = network.getNodeAt(getPos(e));
     if (nodeId !== undefined && NODE_DESCRIPTIONS[nodeId]) show(nodeId);
     else scheduleHide();
   });
-  canvas.addEventListener("mouseleave", scheduleHide);
 
+  document.addEventListener("mouseleave", hide);
+  window.addEventListener("blur", hide);
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") hide();
   });
