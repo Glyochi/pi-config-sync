@@ -43,14 +43,16 @@ FALLBACK_PALETTE = [
 
 DATATYPE_COLOR = "blue"
 
-# Known edge types: (color, line style)
+# Known edge types: (color, dash pattern). vis-network edges use `dashes`
+# (false = solid, or an array of dash/gap pixel lengths), NOT `style` — `style`
+# is a node option and is silently ignored on edges, so every edge renders solid.
 CONTAINS_COLOR = "gray"
-CONTAINS_STYLE = "solid"
+CONTAINS_DASHES = False
 INTERACT_COLOR = "#2B7CE9"
-INTERACT_STYLE = "dashed"
+INTERACT_DASHES = [5, 5]
 COMPOSED_OF_COLOR = "#A020F0"
-COMPOSED_OF_STYLE = "dotted"
-UNKNOWN_EDGE_STYLE = "solid"
+COMPOSED_OF_DASHES = [2, 6]
+UNKNOWN_EDGE_DASHES = False
 
 OPTIONS = """
 {
@@ -339,12 +341,21 @@ def node_style(node_type, fields):
 
 def edge_style(edge_type):
     if edge_type == "Contains":
-        return {"color": CONTAINS_COLOR, "style": CONTAINS_STYLE}
+        return {"color": CONTAINS_COLOR, "dashes": CONTAINS_DASHES}
     if edge_type == "Interact":
-        return {"color": INTERACT_COLOR, "style": INTERACT_STYLE}
+        return {"color": INTERACT_COLOR, "dashes": INTERACT_DASHES}
     if edge_type == "Composed of":
-        return {"color": COMPOSED_OF_COLOR, "style": COMPOSED_OF_STYLE}
-    return {"color": fallback_color(edge_type), "style": UNKNOWN_EDGE_STYLE}
+        return {"color": COMPOSED_OF_COLOR, "dashes": COMPOSED_OF_DASHES}
+    return {"color": fallback_color(edge_type), "dashes": UNKNOWN_EDGE_DASHES}
+
+
+def dashes_label(dashes):
+    """Human-readable name for a dash pattern (used in the legend)."""
+    if not dashes:
+        return "solid"
+    if dashes == COMPOSED_OF_DASHES:
+        return "dotted"
+    return "dashed"
 
 
 def node_title(name, node_type, fields):
@@ -415,7 +426,7 @@ def build_graph(entities, datatypes, relationships):
                 e["parent"],
                 e["name"],
                 color=style["color"],
-                style=style["style"],
+                dashes=style["dashes"],
                 arrows="to",
             )
 
@@ -443,7 +454,7 @@ def build_graph(entities, datatypes, relationships):
                     d["name"],
                     ensure_node(c),
                     color=style["color"],
-                    style=style["style"],
+                    dashes=style["dashes"],
                     arrows="to",
                 )
 
@@ -457,7 +468,7 @@ def build_graph(entities, datatypes, relationships):
             source,
             target,
             color=style["color"],
-            style=style["style"],
+            dashes=style["dashes"],
             arrows="to,from" if r.get("bidirectional") else "to",
             label=label,
             title=edge_title(source, target, r["type"], r["fields"]),
@@ -484,7 +495,7 @@ def build_legend(node_types, edge_types):
             parts.append("{} ({} {})<br>".format(t, s["shape"], s["color"]))
     parts.append("<b>Edges</b><br>")
     for t, s in sorted(edge_types.items()):
-        parts.append("{} ({} {})<br>".format(t, s["style"], s["color"]))
+        parts.append("{} ({} {})<br>".format(t, dashes_label(s["dashes"]), s["color"]))
     parts.append("</div>")
     return "".join(parts)
 
