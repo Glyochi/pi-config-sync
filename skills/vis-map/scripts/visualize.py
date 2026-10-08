@@ -71,9 +71,6 @@ OPTIONS = """
     "multiselect": true,
     "dragNodes": true,
     "dragView": true
-  },
-  "edges": {
-    "smooth": {"type": "curvedCW", "roundness": 0.2}
   }
 }
 """
