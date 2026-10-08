@@ -121,6 +121,9 @@ OPTIONS = """
     },
     "stabilization": {"enabled": true, "iterations": 300, "updateInterval": 25}
   },
+  "edges": {
+    "smooth": false
+  },
   "interaction": {
     "multiselect": true,
     "dragNodes": true,
@@ -163,8 +166,6 @@ INTERACTION_JS = """
 
   var selecting = false;
   var startX = 0, startY = 0;
-  var draggingEdge = null;
-  var edgeStart = null;
 
   // --- undo (Ctrl+Z) ---------------------------------------------------------
   // A layout snapshot is taken when a drag begins and pushed only if the layout
@@ -178,22 +179,14 @@ INTERACTION_JS = """
     Object.keys(positions).sort().forEach(function(id) {
       parts.push(id + ":" + Math.round(positions[id].x) + "," + Math.round(positions[id].y));
     });
-    network.body.data.edges.get().forEach(function(edge) {
-      var smooth = edge.smooth;
-      parts.push("e" + edge.id + ":" + (smooth && smooth.roundness ? Math.round(smooth.roundness * 1000) : 0));
-    });
     return parts.join("|");
   }
 
   function snapshot() {
     var positions = network.getPositions();
-    var nodes = Object.keys(positions).map(function(id) {
+    return Object.keys(positions).map(function(id) {
       return { id: id, x: positions[id].x, y: positions[id].y };
     });
-    var edges = network.body.data.edges.get().map(function(edge) {
-      return { id: edge.id, smooth: edge.smooth };
-    });
-    return { nodes: nodes, edges: edges };
   }
 
   function beginChange() {
@@ -211,13 +204,7 @@ INTERACTION_JS = """
   function undo() {
     var state = undoStack.pop();
     if (!state) return;
-    network.body.data.nodes.update(state.nodes);
-    state.edges.forEach(function(edge) {
-      network.body.data.edges.update({
-        id: edge.id,
-        smooth: edge.smooth || { enabled: true, type: "dynamic", roundness: 0.5 }
-      });
-    });
+    network.body.data.nodes.update(state);
   }
 
   network.on("dragEnd", endChange);
@@ -231,17 +218,8 @@ INTERACTION_JS = """
 
   canvas.addEventListener("mousedown", function(e) {
     var pos = getPos(e);
-    // A node under the pointer always wins. Edges are drawn underneath nodes, so
-    // getEdgeAt() also matches at a node's centre; without this guard every node
-    // drag would bend an edge as well as move the node.
     if (network.getNodeAt(pos) !== undefined) {
-      beginChange();
-      return;
-    }
-    var edgeId = network.getEdgeAt(pos);
-    if (edgeId !== undefined) {
-      draggingEdge = edgeId;
-      edgeStart = pos;
+      // Snapshot before the drag moves anything, so Ctrl+Z can step back.
       beginChange();
       return;
     }
@@ -259,13 +237,6 @@ INTERACTION_JS = """
 
   canvas.addEventListener("mousemove", function(e) {
     var pos = getPos(e);
-    if (draggingEdge) {
-      var dx = pos.x - edgeStart.x;
-      var dy = pos.y - edgeStart.y;
-      var roundness = Math.min(1, Math.sqrt(dx * dx + dy * dy) / 200);
-      network.body.data.edges.update({ id: draggingEdge, smooth: { type: "curvedCW", roundness: roundness } });
-      return;
-    }
     if (selecting) {
       var x = Math.min(startX, pos.x);
       var y = Math.min(startY, pos.y);
@@ -279,11 +250,6 @@ INTERACTION_JS = """
   });
 
   canvas.addEventListener("mouseup", function(e) {
-    if (draggingEdge) {
-      draggingEdge = null;
-      endChange();
-      return;
-    }
     if (selecting) {
       selecting = false;
       selectionBox.style.display = "none";
