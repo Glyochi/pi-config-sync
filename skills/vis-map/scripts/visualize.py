@@ -29,22 +29,25 @@ ENTITY_SHAPE = "box"
 DATATYPE_SHAPE = "diamond"
 UNKNOWN_NODE_SHAPE = "ellipse"
 
-# Entity importance palette, highest -> lowest: up to 10 light backgrounds so the
-# default black node label stays readable. The names are shown in the legend.
+# Entity importance palette: a sequential ramp, strongest -> palest, with hue
+# drifting red -> amber. Importance is ordinal, so the palette varies lightness
+# monotonically (the one visual variable every reader can order, including with
+# colour-vision deficiency and in greyscale) while chroma falls off too. Every
+# step keeps >= 4.5:1 contrast against the default black label (WCAG AA).
 IMPORTANCE_PALETTE = [
-    ("light red", "#F4A3A3"),
-    ("light orange", "#F6C08B"),
-    ("light gray", "#D4D4D4"),
-    ("light yellow", "#EAD98A"),
-    ("light green", "#A9DBA4"),
-    ("light teal", "#9BD6CE"),
-    ("light violet", "#C3B4E8"),
-    ("light pink", "#E8B4D8"),
-    ("light brown", "#D8BFA8"),
-    ("light olive", "#D6D69B"),
+    ("strong red", "#E75C40"),   # contrast 6.00
+    ("red", "#E27757"),          # 7.01
+    ("soft red", "#DD8E6D"),     # 8.16
+    ("orange", "#DAA181"),       # 9.40
+    ("soft orange", "#D8B194"),  # 10.64
+    ("amber", "#D8BEA5"),        # 11.83
+    ("pale amber", "#D8C9B5"),   # 12.94
+    ("pale tan", "#DBD2C4"),     # 14.03
+    ("pale gray", "#DEDAD2"),    # 15.07
+    ("light gray", "#E3E2DE"),   # 16.20
 ]
 
-ENTITY_DEFAULT_COLOR = "#D4D4D4"
+ENTITY_DEFAULT_COLOR = "#E3E2DE"
 
 # Canonical importance order, highest -> lowest. The scale the map skill starts
 # with (Critical / Significant / Peripheral) is pinned first; any other tier the
@@ -62,8 +65,20 @@ IMPORTANCE_ORDER = [
     "trivial",
 ]
 
-# Unknown node types get a deterministic light background from this palette.
-NODE_FALLBACK_PALETTE = [color for _, color in IMPORTANCE_PALETTE]
+# Unknown node types are categorical, not ordinal, so they get a deterministic
+# light color from a qualitative (hue-distinct) palette rather than the ramp.
+NODE_FALLBACK_PALETTE = [
+    ("light green", "#A9DBA4"),
+    ("light teal", "#9BD6CE"),
+    ("light blue", "#A9CCEF"),
+    ("light violet", "#C3B4E8"),
+    ("light pink", "#E8B4D8"),
+    ("light yellow", "#EAD98A"),
+    ("light olive", "#D6D69B"),
+    ("light brown", "#D8BFA8"),
+    ("light cyan", "#B7E3E6"),
+    ("light magenta", "#EBB9E6"),
+]
 
 DATATYPE_COLOR = "#A9CCEF"
 
@@ -88,6 +103,7 @@ UNKNOWN_EDGE_DASHES = False
 # to plain English names. The importance palette carries its own names.
 COLOR_NAMES = {"#2B7CE9": "blue", "#A020F0": "purple", DATATYPE_COLOR: "light blue"}
 COLOR_NAMES.update({color: name for name, color in IMPORTANCE_PALETTE})
+COLOR_NAMES.update({color: name for name, color in NODE_FALLBACK_PALETTE})
 
 OPTIONS = """
 {
@@ -359,18 +375,20 @@ def importance_rank(importance):
 
 
 def order_importance_tiers(tiers):
-    """Sort the tiers present highest -> lowest and assign palette colors.
+    """Sort the tiers present highest -> lowest and assign ramp colors.
 
-    Colors are handed out in importance order, so the top tier always takes the
-    first palette color and the scale reads as a gradient (up to 10 tiers).
+    Colors are sampled across the whole sequential ramp, so the top tier is
+    always the strongest color and the bottom the palest, whatever the count.
     """
     unique = {}
     for tier in tiers:
         if tier and tier.strip():
             unique.setdefault(tier.strip().lower(), tier.strip())
     ordered = sorted(unique.values(), key=importance_rank)
+    last = len(IMPORTANCE_PALETTE) - 1
     for i, tier in enumerate(ordered):
-        _tier_colors[tier.lower()] = IMPORTANCE_PALETTE[i % len(IMPORTANCE_PALETTE)]
+        idx = 0 if len(ordered) <= 1 else int(round(i * last / (len(ordered) - 1)))
+        _tier_colors[tier.lower()] = IMPORTANCE_PALETTE[idx]
     return ordered
 
 
@@ -385,7 +403,7 @@ def entity_color(importance):
 def fallback_node_color(type_name):
     """Deterministic light background for an unknown node type."""
     idx = zlib.crc32(type_name.encode("utf-8")) % len(NODE_FALLBACK_PALETTE)
-    return NODE_FALLBACK_PALETTE[idx]
+    return NODE_FALLBACK_PALETTE[idx][1]
 
 
 def fallback_edge_color(type_name):
