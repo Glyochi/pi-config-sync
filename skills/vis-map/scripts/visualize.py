@@ -11,6 +11,7 @@ Usage:
     python3 visualize.py [ARCHITECTURE.md] [output.html]
 """
 
+import json
 import re
 import sys
 import zlib
@@ -459,6 +460,149 @@ def edge_title(source, target, edge_type, fields):
     return "\n".join(lines)
 
 
+# Cap the built-in vis-network tooltip (still used for edges) so long text wraps
+# instead of stretching the popover across the screen.
+TOOLTIP_CSS = """
+<style type="text/css">
+  div.vis-tooltip {
+    max-width: 340px !important;
+    white-space: pre-wrap !important;
+    word-break: break-word !important;
+  }
+</style>
+"""
+
+# Node hover popover. Replaces vis-network's built-in tooltip for nodes: capped
+# width, selectable text, a Copy button, and it survives the mouse leaving the
+# node so the content can actually be read and copied.
+POPOVER_JS = """
+<script type="text/javascript">
+var NODE_DESCRIPTIONS = __DESCRIPTIONS__;
+(function () {
+  var popover = document.createElement("div");
+  popover.style.cssText = "position:fixed;display:none;max-width:340px;max-height:45vh;"
+    + "overflow:auto;background:rgba(255,255,255,0.98);border:1px solid #ccc;"
+    + "border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.22);padding:10px 12px;"
+    + "z-index:2000;font-family:sans-serif;font-size:12px;line-height:1.5;color:#222;"
+    + "cursor:text;";
+
+  var bar = document.createElement("div");
+  bar.style.cssText = "display:flex;justify-content:flex-end;gap:6px;margin-bottom:6px";
+
+  var copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.textContent = "Copy";
+  copyBtn.style.cssText = "font:inherit;padding:1px 8px;cursor:pointer";
+
+  var closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.textContent = "\u00d7";
+  closeBtn.title = "Close (Esc)";
+  closeBtn.style.cssText = "font:inherit;padding:1px 8px;cursor:pointer";
+
+  bar.appendChild(copyBtn);
+  bar.appendChild(closeBtn);
+
+  var text = document.createElement("div");
+  text.style.cssText = "white-space:pre-wrap;word-break:break-word;"
+    + "user-select:text;-webkit-user-select:text;";
+
+  popover.appendChild(bar);
+  popover.appendChild(text);
+  document.body.appendChild(popover);
+
+  var pinned = false;
+  var hideTimer = null;
+
+  function hide() {
+    pinned = false;
+    clearTimeout(hideTimer);
+    popover.style.display = "none";
+  }
+
+  function scheduleHide() {
+    if (pinned) return;
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(function () {
+      if (!pinned) popover.style.display = "none";
+    }, 300);
+  }
+
+  function show(content, x, y) {
+    if (pinned) return;
+    text.textContent = content;
+    popover.style.display = "block";
+    if (typeof x !== "number" || !isFinite(x)) x = 20;
+    if (typeof y !== "number" || !isFinite(y)) y = 20;
+    var w = popover.offsetWidth;
+    var h = popover.offsetHeight;
+    var left = x + 14;
+    var top = y + 14;
+    if (left + w > window.innerWidth - 8) left = Math.max(8, x - w - 14);
+    if (top + h > window.innerHeight - 8) top = Math.max(8, window.innerHeight - h - 8);
+    popover.style.left = left + "px";
+    popover.style.top = top + "px";
+  }
+
+  popover.addEventListener("mouseenter", function () { clearTimeout(hideTimer); });
+  popover.addEventListener("mouseleave", scheduleHide);
+  popover.addEventListener("mousedown", function () {
+    pinned = true;
+    clearTimeout(hideTimer);
+  });
+  popover.addEventListener("click", function (e) { e.stopPropagation(); });
+
+  closeBtn.addEventListener("click", function (e) { e.stopPropagation(); hide(); });
+
+  copyBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    var content = text.textContent;
+    function done() {
+      copyBtn.textContent = "Copied";
+      setTimeout(function () { copyBtn.textContent = "Copy"; }, 1200);
+    }
+    function fallback() {
+      var range = document.createRange();
+      range.selectNodeContents(text);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      try { document.execCommand("copy"); done(); } catch (err) {}
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(content).then(done, fallback);
+    } else {
+      fallback();
+    }
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") hide();
+  });
+  document.addEventListener("mousedown", function (e) {
+    if (popover.style.display !== "none" && !popover.contains(e.target)) hide();
+  });
+
+  // Detect the hovered node directly from the canvas rather than relying on
+  // vis-network's hoverNode event, which carries a Hammer-wrapped event whose
+  // coordinates are not guaranteed to be present.
+  if (typeof canvas !== "undefined" && canvas && typeof getPos === "function") {
+    canvas.addEventListener("mousemove", function (e) {
+      var nodeId = network.getNodeAt(getPos(e));
+      var content = nodeId !== undefined ? NODE_DESCRIPTIONS[nodeId] : undefined;
+      if (content) {
+        show(content, e.clientX, e.clientY);
+      } else {
+        scheduleHide();
+      }
+    });
+    canvas.addEventListener("mouseleave", scheduleHide);
+  }
+})();
+</script>
+"""
+
+
 # ---------------------------------------------------------------------------
 # Graph construction
 # ---------------------------------------------------------------------------
@@ -468,6 +612,7 @@ def build_graph(entities, datatypes, relationships):
     node_types = {}
     edge_types = {}
     known_nodes = set()
+    descriptions = {}
 
     def ensure_node(name):
         """Resolve an edge endpoint, auto-creating it if it is not defined.
@@ -484,12 +629,12 @@ def build_graph(entities, datatypes, relationships):
         known_nodes.add(name)
         style = node_style("Unknown", {})
         node_types["Unknown"] = style
+        descriptions[name] = node_title(name, "Unknown", {})
         net.add_node(
             name,
             label=name,
             shape=style["shape"],
             color=style["color"],
-            title=node_title(name, "Unknown", {}),
         )
         return name
 
@@ -497,12 +642,12 @@ def build_graph(entities, datatypes, relationships):
         known_nodes.add(e["name"])
         style = node_style(e["type"], e["fields"])
         node_types[e["type"]] = style
+        descriptions[e["name"]] = node_title(e["name"], e["type"], e["fields"])
         net.add_node(
             e["name"],
             label=e["name"],
             shape=style["shape"],
             color=style["color"],
-            title=node_title(e["name"], e["type"], e["fields"]),
         )
 
     for e in entities:
@@ -521,12 +666,12 @@ def build_graph(entities, datatypes, relationships):
         known_nodes.add(d["name"])
         style = node_style(d["type"], d["fields"])
         node_types[d["type"]] = style
+        descriptions[d["name"]] = node_title(d["name"], d["type"], d["fields"])
         net.add_node(
             d["name"],
             label=d["name"],
             shape=style["shape"],
             color=style["color"],
-            title=node_title(d["name"], d["type"], d["fields"]),
         )
 
     for d in datatypes:
@@ -561,7 +706,7 @@ def build_graph(entities, datatypes, relationships):
             title=edge_title(source, target, r["type"], r["fields"]),
         )
 
-    return net, node_types, edge_types
+    return net, node_types, edge_types, descriptions
 
 
 def build_legend(node_types, edge_types, entity_tiers):
@@ -617,14 +762,28 @@ def main():
     entity_tiers = order_importance_tiers(
         e["fields"].get("Importance") for e in entities
     )
-    net, node_types, edge_types = build_graph(entities, datatypes, relationships)
+    net, node_types, edge_types, descriptions = build_graph(
+        entities, datatypes, relationships
+    )
     net.set_options(OPTIONS)
     net.write_html(output_path, open_browser=False)
 
     with open(output_path, "r", encoding="utf-8") as f:
         html = f.read()
     legend = build_legend(node_types, edge_types, entity_tiers)
-    injected = legend + "\n" + PHYSICS_DISABLE_JS + "\n" + INTERACTION_JS + "\n</body>"
+    popover = POPOVER_JS.replace("__DESCRIPTIONS__", json.dumps(descriptions))
+    injected = (
+        legend
+        + "\n"
+        + TOOLTIP_CSS
+        + "\n"
+        + PHYSICS_DISABLE_JS
+        + "\n"
+        + INTERACTION_JS
+        + "\n"
+        + popover
+        + "\n</body>"
+    )
     html = html.replace("</body>", injected)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html)
