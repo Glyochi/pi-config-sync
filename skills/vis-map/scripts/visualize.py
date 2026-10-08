@@ -54,6 +54,13 @@ COMPOSED_OF_COLOR = "#A020F0"
 COMPOSED_OF_DASHES = [2, 6]
 UNKNOWN_EDGE_DASHES = False
 
+# Hex colors render correctly but read poorly in the legend; the palette names
+# above are already English, so only the hex values need mapping.
+COLOR_NAMES = {
+    "#2B7CE9": "blue",
+    "#A020F0": "purple",
+}
+
 OPTIONS = """
 {
   "physics": {
@@ -358,6 +365,12 @@ def dashes_label(dashes):
     return "dashed"
 
 
+def color_label(color):
+    """Human-readable color name for the legend (hex values get a plain name)."""
+    key = color.upper() if isinstance(color, str) else color
+    return COLOR_NAMES.get(key, color)
+
+
 def node_title(name, node_type, fields):
     lines = [name, "Type: " + node_type]
     for k, v in fields.items():
@@ -492,10 +505,16 @@ def build_legend(node_types, edge_types):
                 "Significant=orange, Peripheral=gray)<br>"
             )
         else:
-            parts.append("{} ({} {})<br>".format(t, s["shape"], s["color"]))
+            parts.append(
+                "{} ({} {})<br>".format(t, s["shape"], color_label(s["color"]))
+            )
     parts.append("<b>Edges</b><br>")
     for t, s in sorted(edge_types.items()):
-        parts.append("{} ({} {})<br>".format(t, dashes_label(s["dashes"]), s["color"]))
+        parts.append(
+            "{} ({} {})<br>".format(
+                t, dashes_label(s["dashes"]), color_label(s["color"])
+            )
+        )
     parts.append("</div>")
     return "".join(parts)
 
