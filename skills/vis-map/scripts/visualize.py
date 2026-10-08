@@ -166,15 +166,86 @@ INTERACTION_JS = """
   var draggingEdge = null;
   var edgeStart = null;
 
+  // --- undo (Ctrl+Z) ---------------------------------------------------------
+  // A layout snapshot is taken when a drag begins and pushed only if the layout
+  // actually changed, so undo always steps back one real edit.
+  var undoStack = [];
+  var pending = null;
+
+  function stateKey() {
+    var parts = [];
+    var positions = network.getPositions();
+    Object.keys(positions).sort().forEach(function(id) {
+      parts.push(id + ":" + Math.round(positions[id].x) + "," + Math.round(positions[id].y));
+    });
+    network.body.data.edges.get().forEach(function(edge) {
+      var smooth = edge.smooth;
+      parts.push("e" + edge.id + ":" + (smooth && smooth.roundness ? Math.round(smooth.roundness * 1000) : 0));
+    });
+    return parts.join("|");
+  }
+
+  function snapshot() {
+    var positions = network.getPositions();
+    var nodes = Object.keys(positions).map(function(id) {
+      return { id: id, x: positions[id].x, y: positions[id].y };
+    });
+    var edges = network.body.data.edges.get().map(function(edge) {
+      return { id: edge.id, smooth: edge.smooth };
+    });
+    return { nodes: nodes, edges: edges };
+  }
+
+  function beginChange() {
+    pending = { state: snapshot(), key: stateKey() };
+  }
+
+  function endChange() {
+    if (pending && pending.key !== stateKey()) {
+      undoStack.push(pending.state);
+      if (undoStack.length > 100) undoStack.shift();
+    }
+    pending = null;
+  }
+
+  function undo() {
+    var state = undoStack.pop();
+    if (!state) return;
+    network.body.data.nodes.update(state.nodes);
+    state.edges.forEach(function(edge) {
+      network.body.data.edges.update({
+        id: edge.id,
+        smooth: edge.smooth || { enabled: true, type: "dynamic", roundness: 0.5 }
+      });
+    });
+  }
+
+  network.on("dragEnd", endChange);
+
+  document.addEventListener("keydown", function(e) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
+      e.preventDefault();
+      undo();
+    }
+  });
+
   canvas.addEventListener("mousedown", function(e) {
     var pos = getPos(e);
+    // A node under the pointer always wins. Edges are drawn underneath nodes, so
+    // getEdgeAt() also matches at a node's centre; without this guard every node
+    // drag would bend an edge as well as move the node.
+    if (network.getNodeAt(pos) !== undefined) {
+      beginChange();
+      return;
+    }
     var edgeId = network.getEdgeAt(pos);
     if (edgeId !== undefined) {
       draggingEdge = edgeId;
       edgeStart = pos;
+      beginChange();
       return;
     }
-    if (e.shiftKey && network.getNodeAt(pos) === undefined) {
+    if (e.shiftKey) {
       selecting = true;
       startX = pos.x;
       startY = pos.y;
@@ -210,6 +281,7 @@ INTERACTION_JS = """
   canvas.addEventListener("mouseup", function(e) {
     if (draggingEdge) {
       draggingEdge = null;
+      endChange();
       return;
     }
     if (selecting) {
@@ -230,6 +302,7 @@ INTERACTION_JS = """
       }
       network.selectNodes(selected);
     }
+    endChange();
   });
 </script>
 """
