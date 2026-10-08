@@ -472,132 +472,87 @@ TOOLTIP_CSS = """
 </style>
 """
 
-# Node hover popover. Replaces vis-network's built-in tooltip for nodes: capped
-# width, selectable text, a Copy button, and it survives the mouse leaving the
-# node so the content can actually be read and copied.
+# Node hover popover. Uses vis-network's own hit-testing (getNodeAt on the
+# canvas) but draws our own box, so it can be width-capped and left in place long
+# enough to select the text. The box is anchored beside the node, not under the
+# cursor: a box under the cursor both chases the mouse and covers the node, which
+# breaks hit-testing and makes the hover feel random.
 POPOVER_JS = """
 <script type="text/javascript">
 var NODE_DESCRIPTIONS = __DESCRIPTIONS__;
 (function () {
-  var popover = document.createElement("div");
-  popover.style.cssText = "position:fixed;display:none;max-width:340px;max-height:45vh;"
+  if (typeof canvas === "undefined" || !canvas || typeof getPos !== "function") return;
+
+  var box = document.createElement("div");
+  box.style.cssText = "position:fixed;display:none;max-width:340px;max-height:50vh;"
     + "overflow:auto;background:rgba(255,255,255,0.98);border:1px solid #ccc;"
-    + "border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,0.22);padding:10px 12px;"
+    + "border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.2);padding:8px 10px;"
     + "z-index:2000;font-family:sans-serif;font-size:12px;line-height:1.5;color:#222;"
-    + "cursor:text;";
+    + "white-space:pre-wrap;word-break:break-word;"
+    + "user-select:text;-webkit-user-select:text;cursor:text;";
+  document.body.appendChild(box);
 
-  var bar = document.createElement("div");
-  bar.style.cssText = "display:flex;justify-content:flex-end;gap:6px;margin-bottom:6px";
-
-  var copyBtn = document.createElement("button");
-  copyBtn.type = "button";
-  copyBtn.textContent = "Copy";
-  copyBtn.style.cssText = "font:inherit;padding:1px 8px;cursor:pointer";
-
-  var closeBtn = document.createElement("button");
-  closeBtn.type = "button";
-  closeBtn.textContent = "\u00d7";
-  closeBtn.title = "Close (Esc)";
-  closeBtn.style.cssText = "font:inherit;padding:1px 8px;cursor:pointer";
-
-  bar.appendChild(copyBtn);
-  bar.appendChild(closeBtn);
-
-  var text = document.createElement("div");
-  text.style.cssText = "white-space:pre-wrap;word-break:break-word;"
-    + "user-select:text;-webkit-user-select:text;";
-
-  popover.appendChild(bar);
-  popover.appendChild(text);
-  document.body.appendChild(popover);
-
-  var pinned = false;
   var hideTimer = null;
+  var shown = null;
 
   function hide() {
-    pinned = false;
     clearTimeout(hideTimer);
-    popover.style.display = "none";
+    shown = null;
+    box.style.display = "none";
   }
 
   function scheduleHide() {
-    if (pinned) return;
     clearTimeout(hideTimer);
-    hideTimer = setTimeout(function () {
-      if (!pinned) popover.style.display = "none";
-    }, 300);
+    hideTimer = setTimeout(hide, 400);
   }
 
-  function show(content, x, y) {
-    if (pinned) return;
-    text.textContent = content;
-    popover.style.display = "block";
-    if (typeof x !== "number" || !isFinite(x)) x = 20;
-    if (typeof y !== "number" || !isFinite(y)) y = 20;
-    var w = popover.offsetWidth;
-    var h = popover.offsetHeight;
-    var left = x + 14;
-    var top = y + 14;
-    if (left + w > window.innerWidth - 8) left = Math.max(8, x - w - 14);
-    if (top + h > window.innerHeight - 8) top = Math.max(8, window.innerHeight - h - 8);
-    popover.style.left = left + "px";
-    popover.style.top = top + "px";
+  // Sit just outside the node, so the box never covers the node and never sits
+  // under the cursor; the mouse can then travel from the node onto the box.
+  function place(nodeId) {
+    var w = box.offsetWidth;
+    var h = box.offsetHeight;
+    var left;
+    var top;
+    try {
+      var rect = network.getBoundingBox(nodeId);
+      var tl = network.canvasToDOM({ x: rect.left, y: rect.top });
+      var br = network.canvasToDOM({ x: rect.right, y: rect.bottom });
+      left = br.x + 12;
+      top = tl.y;
+      if (left + w > window.innerWidth - 8) left = tl.x - w - 12;
+    } catch (err) {
+      var p = network.canvasToDOM(network.getPositions()[nodeId]);
+      left = p.x + 24;
+      top = p.y + 24;
+    }
+    left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+    top = Math.max(8, Math.min(top, window.innerHeight - h - 8));
+    box.style.left = left + "px";
+    box.style.top = top + "px";
   }
 
-  popover.addEventListener("mouseenter", function () { clearTimeout(hideTimer); });
-  popover.addEventListener("mouseleave", scheduleHide);
-  popover.addEventListener("mousedown", function () {
-    pinned = true;
+  function show(nodeId) {
     clearTimeout(hideTimer);
-  });
-  popover.addEventListener("click", function (e) { e.stopPropagation(); });
+    if (shown === nodeId) return;
+    shown = nodeId;
+    box.textContent = NODE_DESCRIPTIONS[nodeId];
+    box.style.display = "block";
+    place(nodeId);
+  }
 
-  closeBtn.addEventListener("click", function (e) { e.stopPropagation(); hide(); });
+  box.addEventListener("mouseenter", function () { clearTimeout(hideTimer); });
+  box.addEventListener("mouseleave", scheduleHide);
 
-  copyBtn.addEventListener("click", function (e) {
-    e.stopPropagation();
-    var content = text.textContent;
-    function done() {
-      copyBtn.textContent = "Copied";
-      setTimeout(function () { copyBtn.textContent = "Copy"; }, 1200);
-    }
-    function fallback() {
-      var range = document.createRange();
-      range.selectNodeContents(text);
-      var sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-      try { document.execCommand("copy"); done(); } catch (err) {}
-    }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(content).then(done, fallback);
-    } else {
-      fallback();
-    }
+  canvas.addEventListener("mousemove", function (e) {
+    var nodeId = network.getNodeAt(getPos(e));
+    if (nodeId !== undefined && NODE_DESCRIPTIONS[nodeId]) show(nodeId);
+    else scheduleHide();
   });
+  canvas.addEventListener("mouseleave", scheduleHide);
 
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") hide();
   });
-  document.addEventListener("mousedown", function (e) {
-    if (popover.style.display !== "none" && !popover.contains(e.target)) hide();
-  });
-
-  // Detect the hovered node directly from the canvas rather than relying on
-  // vis-network's hoverNode event, which carries a Hammer-wrapped event whose
-  // coordinates are not guaranteed to be present.
-  if (typeof canvas !== "undefined" && canvas && typeof getPos === "function") {
-    canvas.addEventListener("mousemove", function (e) {
-      var nodeId = network.getNodeAt(getPos(e));
-      var content = nodeId !== undefined ? NODE_DESCRIPTIONS[nodeId] : undefined;
-      if (content) {
-        show(content, e.clientX, e.clientY);
-      } else {
-        scheduleHide();
-      }
-    });
-    canvas.addEventListener("mouseleave", scheduleHide);
-  }
 })();
 </script>
 """
