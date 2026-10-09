@@ -14,10 +14,14 @@
   ],
   "theme": "neon-green",
   "tuiMode": "fullscreen",
-  "hideThinkingBlock": false,
+  "hideThinkingBlock": true,
   "enabledModels": [
     "opencode/deepseek-v4.1-flash",
     "opencode/gpt-6-luna"
   ],
-  "showCacheMissNotices": true
+  "showCacheMissNotices": true,
+  "modelThinkingLevels": {
+    "opencode/gpt-6-luna": "max",
+    "opencode/deepseek-v4.1-flash": "max"
+  }
 }
