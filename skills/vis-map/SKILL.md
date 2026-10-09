@@ -25,13 +25,14 @@ containment frames in the graph.
 Node positions are presentation state, separate from the semantic content in
 `map/MAP.md`; the sidecar preserves hand-arranged nodes when `/vis-map`
 regenerates its HTML. The **Save layout** button downloads a versioned
-`map-graph.layout.json` containing node coordinates only; place it at
+`map-graph.layout.json` containing coordinates for independently movable nodes;
+owner-header positions are derived from their contents. Place it at
 `map/map-graph.layout.json` beside the default HTML before regenerating. For a
 custom output path, the sidecar uses the same stem with `.layout.json`. Edge
 routes and owner-frame bounds are recalculated from node positions; frames are
-not saved separately. The Python script reads the sidecar during generation and embeds valid
-positions into the new HTML instead of having a local-file page fetch a
-neighboring JSON file, which browsers commonly block. Positions match by node
+not saved separately. The Python script reads the sidecar during generation
+and embeds valid positions into the new HTML instead of having a local-file
+page fetch a neighboring JSON file, which browsers commonly block. Positions match by node
 ID: missing or invalid entries use the normal layout, new nodes are laid out as
 usual, and stale IDs are ignored. The versioned schema can be extended without
 changing `map/MAP.md`.
@@ -45,20 +46,28 @@ node highlights the `Interact` edges that reference it and any incident
 `Composed of` edges. If no matching node exists, the value remains a plain edge
 label; no node is invented and no warning is emitted.
 
-Nested entity headings render as owner frames enclosing the owner and its full
-descendant subtree. The owner remains a real graph node for layout, links, hover
-details, and selection; its importance-colored header is drawn within the frame.
+Nested entity headings render as owner frames around the full descendant
+subtree. The owner's importance-colored label sits on and interrupts the top
+border (`-- [owner] --`). It remains a graph anchor for links, hover details, and
+selection, and its resting position is derived from its child frames. Dragging
+a single owner header translates its full descendant subtree, including nested
+frames. Dragging a non-owner node remains child-only; multi-selection retains
+its existing selected-node-only behavior without expanding owner groups. Leaf
+nodes and DataTypes remain individually draggable.
 `Contains` edges are hidden from the canvas but remain physics-enabled springs,
-so the initial layout retains hierarchy clustering. Frames refit continuously
-after node moves; their members stay independently draggable, and moving a member
-far away expands its ancestor frames rather than constraining or moving the
-group. DataType nodes remain outside these entity frames.
+so the initial layout retains hierarchy clustering. Parent frames pad around
+their direct child nodes or frames, leaving visible space between nested boxes.
+Frames refit as members move; moving a movable member far away expands its
+ancestor frames rather than constraining or moving the group. Hovering or
+selecting an owner highlights only its own frame, not ancestor frames. DataType
+nodes remain outside these entity frames.
 
 The initial layout seeds DataType nodes on the right and all other nodes on the
 left, then uses the existing force-directed clustering. The split is only a
-starting arrangement; after stabilization every node remains freely draggable
-in both directions. Parallel visible edges between the same nodes are routed
-into distinct curved lanes regardless of their line styles. Do not improvise
+starting arrangement; after stabilization independently movable nodes remain
+free to drag in both directions, while owner headers stay aligned to their
+frames. Parallel visible edges between the same nodes are routed into distinct
+curved lanes regardless of their line styles. Do not improvise
 colors, shapes, or labels per invocation:
 the script's style presets are the source of truth, and other
 `- **Type**: X` tags use deterministic fallback styles.

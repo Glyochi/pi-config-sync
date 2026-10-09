@@ -11,8 +11,9 @@ get a deterministic fallback. Interact-edge DataType labels that exactly
 match existing DataType nodes highlight those nodes when the edge is hovered or
 selected; hovering a DataType node also highlights its associated edges.
 Unmatched labels remain plain strings. DataType nodes are seeded on the right
-and all other nodes on the left before force-directed clustering;
-after stabilization, every node remains freely draggable in both directions.
+and all other nodes on the left before force-directed clustering; after
+stabilization, dragging an owner header moves its subtree while other nodes
+remain independently draggable.
 Nested heading containment is drawn as a live owner frame; hidden `Contains`
 edges remain physics springs for layout. All styling is hardcoded below so the
 output is identical regardless of which model invokes this script.
@@ -110,6 +111,7 @@ DATATYPE_REFERENCE_HIGHLIGHT_EDGE_WIDTH = 4
 
 # Container frames are derived from live node bounds and never persisted.
 CONTAINMENT_FRAME_PADDING = 24
+CONTAINMENT_FRAME_HEADER_GAP = 12
 CONTAINMENT_FRAME_FILL_ALPHA = 0.055
 CONTAINMENT_FRAME_STROKE_WIDTH = 1.5
 CONTAINMENT_FRAME_BORDER_COLOR = "#777777"
@@ -196,13 +198,14 @@ PHYSICS_DISABLE_JS = """
 """
 
 # Ownership is shown as live frames around a container and all its descendants.
-# Owner nodes remain graph anchors, but their label and importance-colored header
-# are drawn here so their identity stays visible without duplicating the title.
+# Owner nodes remain graph anchors and are aligned to the frame's top-border
+# title after layout; dragging one translates its descendant subtree.
 CONTAINMENT_FRAME_JS = """
 <script type="text/javascript">
 (function () {
   var FRAMES = __CONTAINMENT_FRAMES__;
   var FRAME_PADDING = __FRAME_PADDING__;
+  var FRAME_HEADER_GAP = __FRAME_HEADER_GAP__;
   var FRAME_FILL_ALPHA = __FRAME_FILL_ALPHA__;
   var FRAME_STROKE_WIDTH = __FRAME_STROKE_WIDTH__;
   var FRAME_BORDER_COLOR = "__FRAME_BORDER_COLOR__";
@@ -211,6 +214,13 @@ CONTAINMENT_FRAME_JS = """
   var HIGHLIGHT_BORDER = "__HIGHLIGHT_BORDER__";
   var HIGHLIGHT_BORDER_WIDTH = __HIGHLIGHT_BORDER_WIDTH__;
   var hoveredNode = null;
+  var syncingOwners = false;
+  var syncScheduled = false;
+  var ownerGroupDrag = null;
+  var FRAME_BY_OWNER = Object.create(null);
+  FRAMES.forEach(function (frame) {
+    FRAME_BY_OWNER[String(frame.owner)] = frame;
+  });
   window.mapContainmentLegendHighlight = false;
 
   function rgba(color, alpha) {
@@ -256,33 +266,205 @@ CONTAINMENT_FRAME_JS = """
     }
   }
 
-  function frameBounds(frame, scale) {
+  function mergeBounds(bounds, next) {
+    if (!next) return bounds;
+    if (!bounds) {
+      return {
+        left: next.left,
+        top: next.top,
+        right: next.right,
+        bottom: next.bottom
+      };
+    }
+    bounds.left = Math.min(bounds.left, next.left);
+    bounds.top = Math.min(bounds.top, next.top);
+    bounds.right = Math.max(bounds.right, next.right);
+    bounds.bottom = Math.max(bounds.bottom, next.bottom);
+    return bounds;
+  }
+
+  function contentBounds(frame, scale, memo) {
     var bounds = null;
-    frame.members.forEach(function (nodeId) {
-      var node = nodeBounds(nodeId);
-      if (!node) return;
-      if (!bounds) {
-        bounds = {
-          left: node.left,
-          top: node.top,
-          right: node.right,
-          bottom: node.bottom
-        };
+    frame.children.forEach(function (childId) {
+      var childFrame = FRAME_BY_OWNER[String(childId)];
+      var childGeometry = childFrame
+        ? frameGeometry(childFrame, scale, memo)
+        : null;
+      var childBounds = childFrame
+        ? (childGeometry ? childGeometry.visual : null)
+        : nodeBounds(childId);
+      bounds = mergeBounds(bounds, childBounds);
+    });
+    return bounds;
+  }
+
+  function frameGeometry(frame, scale, memo) {
+    var key = String(frame.owner);
+    if (memo[key]) return memo[key];
+
+    var owner = network.body.data.nodes.get(frame.owner);
+    var header = nodeBounds(frame.owner);
+    var content = contentBounds(frame, scale, memo);
+    if (!owner || !header || !content) return null;
+
+    var padding = FRAME_PADDING / scale;
+    var border;
+    if (owner.mapFrameReady) {
+      border = {
+        left: Math.min(content.left - padding, header.left),
+        top: (header.top + header.bottom) / 2,
+        right: Math.max(content.right + padding, header.right),
+        bottom: Math.max(content.bottom + padding, header.bottom)
+      };
+    } else {
+      border = {
+        left: Math.min(content.left, header.left) - padding,
+        top: Math.min(content.top, header.top) - padding,
+        right: Math.max(content.right, header.right) + padding,
+        bottom: Math.max(content.bottom, header.bottom) + padding
+      };
+    }
+    var visual = {
+      left: Math.min(border.left, header.left),
+      top: Math.min(border.top, header.top),
+      right: Math.max(border.right, header.right),
+      bottom: Math.max(border.bottom, header.bottom)
+    };
+    memo[key] = {
+      owner: owner,
+      header: header,
+      border: border,
+      visual: visual
+    };
+    return memo[key];
+  }
+
+  function syncOwnerAnchors() {
+    if (syncingOwners || !FRAMES.length) return;
+    syncingOwners = true;
+    try {
+      var scale = network.getScale();
+      if (!Number.isFinite(scale) || scale <= 0) scale = 1;
+
+      // Inner frames are positioned first; parent frames then use their full
+      // bounds, including the child frame's title and padding.
+      for (var i = FRAMES.length - 1; i >= 0; i--) {
+        var frame = FRAMES[i];
+        var content = contentBounds(frame, scale, Object.create(null));
+        var owner = network.body.data.nodes.get(frame.owner);
+        var header = nodeBounds(frame.owner);
+        if (!content || !owner || !header) continue;
+
+        var headerHeight = Math.max(header.bottom - header.top, 18 / scale);
+        var x = (content.left + content.right) / 2;
+        var y = content.top - headerHeight / 2 - FRAME_HEADER_GAP / scale;
+        var current = network.getPositions()[String(frame.owner)];
+        var moved = !current
+          || Math.abs(current.x - x) > 0.25 / scale
+          || Math.abs(current.y - y) > 0.25 / scale;
+        var stateChanged = !owner.mapFrameReady
+          || owner.fixed !== false
+          || owner.physics !== false;
+
+        if (moved) network.moveNode(frame.owner, x, y);
+        if (stateChanged) {
+          network.body.data.nodes.update({
+            id: frame.owner,
+            fixed: false,
+            physics: false,
+            mapFrameReady: true
+          });
+        }
+        if (moved || stateChanged) network.redraw();
+      }
+    } finally {
+      syncingOwners = false;
+    }
+    network.redraw();
+  }
+
+  function scheduleOwnerSync(params) {
+    if (
+      ownerGroupDrag
+      || syncScheduled
+      || (params && Array.isArray(params.nodes) && params.nodes.length > 1)
+    ) return;
+    syncScheduled = true;
+    window.requestAnimationFrame(function () {
+      syncScheduled = false;
+      syncOwnerAnchors();
+    });
+  }
+
+  function beginOwnerGroupDrag(params) {
+    ownerGroupDrag = null;
+    if (!params || !Array.isArray(params.nodes) || params.nodes.length !== 1) {
+      return;
+    }
+    var ownerId = String(params.nodes[0]);
+    var frame = FRAME_BY_OWNER[ownerId];
+    var position = network.getPositions()[ownerId];
+    if (!frame || !position) return;
+    var pointer = params.pointer && params.pointer.canvas;
+    ownerGroupDrag = {
+      owner: ownerId,
+      members: frame.members.slice(),
+      lastOwner: { x: position.x, y: position.y },
+      lastPointer: pointer ? { x: pointer.x, y: pointer.y } : null
+    };
+  }
+
+  function translateOwnerGroup(params) {
+    if (!ownerGroupDrag) return;
+    if (params && Array.isArray(params.nodes)) {
+      if (
+        params.nodes.length > 1
+        || (params.nodes.length === 1
+          && String(params.nodes[0]) !== ownerGroupDrag.owner)
+      ) {
+        ownerGroupDrag = null;
         return;
       }
-      bounds.left = Math.min(bounds.left, node.left);
-      bounds.top = Math.min(bounds.top, node.top);
-      bounds.right = Math.max(bounds.right, node.right);
-      bounds.bottom = Math.max(bounds.bottom, node.bottom);
+    }
+
+    var positions = network.getPositions();
+    var currentOwner = positions[ownerGroupDrag.owner];
+    if (!currentOwner) return;
+    // vis-network emits `dragging` before it moves the owner anchor, so prefer
+    // the canvas-pointer delta and use actual positions as the dragEnd fallback.
+    var pointer = params && params.pointer && params.pointer.canvas;
+    var dx;
+    var dy;
+    if (pointer && ownerGroupDrag.lastPointer) {
+      dx = pointer.x - ownerGroupDrag.lastPointer.x;
+      dy = pointer.y - ownerGroupDrag.lastPointer.y;
+      ownerGroupDrag.lastPointer = { x: pointer.x, y: pointer.y };
+    } else {
+      dx = currentOwner.x - ownerGroupDrag.lastOwner.x;
+      dy = currentOwner.y - ownerGroupDrag.lastOwner.y;
+    }
+    if (dx === 0 && dy === 0) return;
+
+    ownerGroupDrag.members.forEach(function (nodeId) {
+      var key = String(nodeId);
+      if (key === ownerGroupDrag.owner) return;
+      var position = positions[key];
+      if (position) network.moveNode(key, position.x + dx, position.y + dy);
     });
-    if (!bounds) return null;
-    var padding = FRAME_PADDING / scale;
-    return {
-      left: bounds.left - padding,
-      top: bounds.top - padding,
-      right: bounds.right + padding,
-      bottom: bounds.bottom + padding
+    ownerGroupDrag.lastOwner = {
+      x: currentOwner.x + dx,
+      y: currentOwner.y + dy
     };
+  }
+
+  function finishOwnerGroupDrag() {
+    if (ownerGroupDrag) {
+      // At dragEnd use the actual owner position, since vis-network has already
+      // applied the last pointer movement before emitting this event.
+      translateOwnerGroup({ nodes: [ownerGroupDrag.owner] });
+    }
+    ownerGroupDrag = null;
+    syncOwnerAnchors();
   }
 
   function drawFrames(ctx) {
@@ -295,28 +477,29 @@ CONTAINMENT_FRAME_JS = """
       function (nodeId) { selected[String(nodeId)] = true; }
     );
 
+    var memo = Object.create(null);
     var drawn = [];
     FRAMES.forEach(function (frame) {
-      var owner = network.body.data.nodes.get(frame.owner);
-      var bounds = frameBounds(frame, scale);
-      if (!owner || !bounds) return;
+      var geometry = frameGeometry(frame, scale, memo);
+      if (!geometry) return;
+      var ownerId = String(frame.owner);
       var active = !!window.mapContainmentLegendHighlight
-        || !!owner.mapFrameHighlighted
-        || frame.members.some(function (nodeId) {
-          return selected[String(nodeId)] || String(nodeId) === hoveredNode;
-        });
+        || !!geometry.owner.mapFrameHighlighted
+        || !!selected[ownerId]
+        || ownerId === hoveredNode;
       drawn.push({
         frame: frame,
-        owner: owner,
-        bounds: bounds,
+        owner: geometry.owner,
+        geometry: geometry,
         active: active
       });
     });
 
-    // Frames are ordered outermost first, so nested boundaries remain visible.
+    // Frames are ordered outermost first; each parent pads around its child
+    // frame bounds, leaving a clear gap between nested ownership regions.
     drawn.forEach(function (item) {
       ctx.save();
-      drawRoundedRect(ctx, item.bounds, 8 / scale);
+      drawRoundedRect(ctx, item.geometry.border, 8 / scale);
       ctx.fillStyle = item.active
         ? rgba(HIGHLIGHT_BACKGROUND, 0.12)
         : rgba(item.owner.mapBaseColor, FRAME_FILL_ALPHA);
@@ -330,11 +513,10 @@ CONTAINMENT_FRAME_JS = """
       ctx.restore();
     });
 
-    // The owner is still a real graph node for links, hover details, and layout.
-    // Its transparent canvas node is painted here as the frame's single header.
+    // The owner header is centered on the frame's top border. Its opaque fill
+    // interrupts the line, producing a clear `-- [owner] --` label treatment.
     drawn.forEach(function (item) {
-      var header = nodeBounds(item.frame.owner);
-      if (!header) return;
+      var header = item.geometry.header;
       var owner = item.owner;
       var label = String(owner.label || item.frame.owner);
       ctx.save();
@@ -359,6 +541,13 @@ CONTAINMENT_FRAME_JS = """
     });
   }
 
+  window.mapSyncContainmentOwners = syncOwnerAnchors;
+  network.once("stabilizationIterationsDone", syncOwnerAnchors);
+  setTimeout(syncOwnerAnchors, 5200);
+  network.on("dragStart", beginOwnerGroupDrag);
+  network.on("dragging", translateOwnerGroup);
+  network.on("dragging", scheduleOwnerSync);
+  network.on("dragEnd", finishOwnerGroupDrag);
   network.on("beforeDrawing", drawFrames);
   network.on("hoverNode", function (params) {
     hoveredNode = String(params.node);
@@ -440,6 +629,9 @@ INTERACTION_JS = """
     var state = undoStack.pop();
     if (!state) return;
     network.body.data.nodes.update(state);
+    if (window.mapSyncContainmentOwners) {
+      window.mapSyncContainmentOwners();
+    }
     rerouteEdges();
   }
 
@@ -1370,6 +1562,8 @@ LAYOUT_SAVE_JS = """
     var positions = network.getPositions();
     var nodes = Object.create(null);
     Object.keys(positions).forEach(function (id) {
+      var node = network.body.data.nodes.get(id);
+      if (node && node.mapContainer) return;
       var position = positions[id];
       if (
         !position
@@ -1425,7 +1619,7 @@ def seed_nodes_in_columns(net, datatype_node_colors):
 
 
 def build_containment_frames(entities):
-    """Return owner nodes and their transitive descendants, outermost first."""
+    """Return direct children and transitive members, outermost first."""
     children = {}
     for entity in entities:
         parent = entity["parent"]
@@ -1449,7 +1643,11 @@ def build_containment_frames(entities):
             visited.add(child)
             descendants.append(child)
             pending.extend(reversed(children.get(child, [])))
-        frames.append({"owner": owner, "members": [owner] + descendants})
+        frames.append({
+            "owner": owner,
+            "children": list(direct_children),
+            "members": [owner] + descendants,
+        })
 
     frames.sort(key=lambda frame: len(frame["members"]), reverse=True)
     return frames
@@ -1827,9 +2025,11 @@ def load_saved_layout(layout_path):
 
 
 def apply_saved_layout(net, positions):
-    """Apply matching saved coordinates while leaving new nodes in force layout."""
+    """Restore movable nodes; owner headers are derived from child positions."""
     applied = 0
     for node in net.nodes:
+        if node.get("mapContainer"):
+            continue
         position = positions.get(str(node["id"]))
         if position is None:
             continue
@@ -1916,6 +2116,10 @@ def main():
             "__CONTAINMENT_FRAMES__", containment_frames_json
         )
         .replace("__FRAME_PADDING__", str(CONTAINMENT_FRAME_PADDING))
+        .replace(
+            "__FRAME_HEADER_GAP__",
+            str(CONTAINMENT_FRAME_HEADER_GAP),
+        )
         .replace("__FRAME_FILL_ALPHA__", str(CONTAINMENT_FRAME_FILL_ALPHA))
         .replace("__FRAME_STROKE_WIDTH__", str(CONTAINMENT_FRAME_STROKE_WIDTH))
         .replace("__FRAME_BORDER_COLOR__", CONTAINMENT_FRAME_BORDER_COLOR)
@@ -1960,8 +2164,8 @@ def main():
         LAYOUT_SAVE_UI,
         TOOLTIP_CSS,
         PHYSICS_DISABLE_JS,
-        INTERACTION_JS,
         containment_frames_js,
+        INTERACTION_JS,
         node_tooltip,
         datatype_reference,
         layout_save_js,
