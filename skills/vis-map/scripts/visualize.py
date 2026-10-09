@@ -4,8 +4,10 @@
 Reads the markdown produced by the `map` skill and writes an HTML graph. The
 format is self-describing via `- **Type**: X` tags, so this script renders any
 node/edge type generically: known types get their fixed styling, unknown types
-get a deterministic fallback. All styling is hardcoded below so the output is
-identical regardless of which model invokes this script.
+get a deterministic fallback. Interact-edge DataType labels that exactly
+match existing DataType nodes highlight those nodes when the edge is hovered or
+selected; unmatched labels remain plain strings. All styling is hardcoded below
+so the output is identical regardless of which model invokes this script.
 
 Usage:
     python3 visualize.py [ARCHITECTURE.md] [output.html]
@@ -83,6 +85,9 @@ NODE_FALLBACK_PALETTE = [
 ]
 
 DATATYPE_COLOR = "#A9CCEF"
+DATATYPE_REFERENCE_HIGHLIGHT_BACKGROUND = "#FFE08A"
+DATATYPE_REFERENCE_HIGHLIGHT_BORDER = "#E67700"
+DATATYPE_REFERENCE_HIGHLIGHT_BORDER_WIDTH = 4
 
 # Unknown edge types keep saturated colors so the lines stay visible on white.
 EDGE_FALLBACK_PALETTE = [
@@ -893,6 +898,65 @@ NODE_TOOLTIP_JS = """
 </script>
 """
 
+DATATYPE_REFERENCE_JS = """
+<script type="text/javascript">
+(function () {
+  var DATATYPE_NODE_COLORS = __DATATYPE_NODE_COLORS__;
+  var HIGHLIGHT_BACKGROUND = "__HIGHLIGHT_BACKGROUND__";
+  var HIGHLIGHT_BORDER = "__HIGHLIGHT_BORDER__";
+  var HIGHLIGHT_BORDER_WIDTH = __HIGHLIGHT_BORDER_WIDTH__;
+  var hoveredEdge = null;
+  var activeHighlights = Object.create(null);
+
+  function addEdgeReferences(active, edgeId) {
+    var edge = network.body.data.edges.get(edgeId);
+    if (!edge || !Array.isArray(edge.dataTypeRefs)) return;
+    edge.dataTypeRefs.forEach(function (nodeId) {
+      active[String(nodeId)] = true;
+    });
+  }
+
+  function updateHighlights() {
+    var active = Object.create(null);
+    var selectedEdges = network.getSelectedEdges
+      ? network.getSelectedEdges()
+      : [];
+    selectedEdges.forEach(function (edgeId) {
+      addEdgeReferences(active, edgeId);
+    });
+    if (hoveredEdge !== null) addEdgeReferences(active, hoveredEdge);
+
+    Object.keys(DATATYPE_NODE_COLORS).forEach(function (nodeId) {
+      var shouldHighlight = !!active[nodeId];
+      if (shouldHighlight === !!activeHighlights[nodeId]) return;
+      network.body.data.nodes.update({
+        id: nodeId,
+        color: shouldHighlight
+          ? { background: HIGHLIGHT_BACKGROUND, border: HIGHLIGHT_BORDER }
+          : DATATYPE_NODE_COLORS[nodeId],
+        borderWidth: shouldHighlight ? HIGHLIGHT_BORDER_WIDTH : 1
+      });
+      activeHighlights[nodeId] = shouldHighlight;
+    });
+  }
+
+  network.on("hoverEdge", function (params) {
+    hoveredEdge = params.edge;
+    updateHighlights();
+  });
+  network.on("blurEdge", function (params) {
+    if (hoveredEdge === params.edge) hoveredEdge = null;
+    updateHighlights();
+  });
+  ["selectEdge", "deselectEdge", "selectNode", "deselectNode"].forEach(
+    function (eventName) {
+      network.on(eventName, updateHighlights);
+    }
+  );
+})();
+</script>
+"""
+
 
 # ---------------------------------------------------------------------------
 # Graph construction
@@ -916,6 +980,7 @@ def build_graph(entities, datatypes, relationships, tier_colors):
             shape=style["shape"],
             color=style["color"],
         )
+        return style
 
     def ensure_node(name):
         """Resolve qualified references or add a generic unknown node."""
@@ -928,7 +993,8 @@ def build_graph(entities, datatypes, relationships, tier_colors):
         return name
 
     def add_edge(
-        source, target, edge_type, fields=None, bidirectional=False, label=None
+        source, target, edge_type, fields=None, bidirectional=False, label=None,
+        datatype_refs=None
     ):
         style = edge_style(edge_type)
         edge_types[edge_type] = style
@@ -940,6 +1006,8 @@ def build_graph(entities, datatypes, relationships, tier_colors):
         }
         if label:
             options["label"] = label
+        if datatype_refs:
+            options["dataTypeRefs"] = datatype_refs
         net.add_edge(source, target, **options)
 
     for e in entities:
@@ -949,8 +1017,11 @@ def build_graph(entities, datatypes, relationships, tier_colors):
         if e["parent"]:
             add_edge(e["parent"], e["name"], "Contains")
 
+    datatype_node_colors = {}
     for d in datatypes:
-        add_node(d["name"], d["type"], d["fields"])
+        style = add_node(d["name"], d["type"], d["fields"])
+        if d["type"] == "DataType":
+            datatype_node_colors[d["name"]] = style["color"]
 
     for d in datatypes:
         for entry in d["composed_of"]:
@@ -963,6 +1034,11 @@ def build_graph(entities, datatypes, relationships, tier_colors):
     for r in relationships:
         source = ensure_node(r["source"])
         target = ensure_node(r["target"])
+        datatype_refs = []
+        if r["type"] == "Interact":
+            datatype_value = r["fields"].get("DataType", "").strip()
+            if datatype_value in datatype_node_colors:
+                datatype_refs.append(datatype_value)
         add_edge(
             source,
             target,
@@ -970,9 +1046,10 @@ def build_graph(entities, datatypes, relationships, tier_colors):
             fields=r["fields"],
             bidirectional=r.get("bidirectional", False),
             label=r["fields"].get("DataType"),
+            datatype_refs=datatype_refs,
         )
 
-    return net, node_types, edge_types, descriptions
+    return net, node_types, edge_types, descriptions, datatype_node_colors
 
 
 def build_legend(node_types, edge_types, entity_tiers, tier_colors):
@@ -1004,6 +1081,19 @@ def build_legend(node_types, edge_types, entity_tiers, tier_colors):
                 t, dashes_label(s["dashes"]), color_label(s["color"])
             )
         )
+    parts.append(
+        (
+            '<b>Reference highlight</b><br>'
+            '<span style="display:inline-block;width:10px;height:10px;'
+            'background:{background};border:{border_width}px solid {border};'
+            'vertical-align:middle;"></span> '
+            'DataType node highlighted on Interact edge hover/selection<br>'
+        ).format(
+            background=DATATYPE_REFERENCE_HIGHLIGHT_BACKGROUND,
+            border=DATATYPE_REFERENCE_HIGHLIGHT_BORDER,
+            border_width=DATATYPE_REFERENCE_HIGHLIGHT_BORDER_WIDTH,
+        )
+    )
     parts.append("</div>")
     return "".join(parts)
 
@@ -1030,7 +1120,7 @@ def main():
     entity_tiers, tier_colors = order_importance_tiers(
         e["fields"].get("Importance") for e in entities
     )
-    net, node_types, edge_types, descriptions = build_graph(
+    net, node_types, edge_types, descriptions, datatype_node_colors = build_graph(
         entities, datatypes, relationships, tier_colors
     )
     net.set_options(json.dumps(OPTIONS))
@@ -1044,12 +1134,27 @@ def main():
     node_tooltip = NODE_TOOLTIP_JS.replace(
         "__NODE_DESCRIPTIONS__", descriptions_json
     )
+    datatype_colors_json = json.dumps(datatype_node_colors).replace(
+        "<", r"\u003c"
+    )
+    datatype_reference = (
+        DATATYPE_REFERENCE_JS.replace(
+            "__DATATYPE_NODE_COLORS__", datatype_colors_json
+        )
+        .replace("__HIGHLIGHT_BACKGROUND__", DATATYPE_REFERENCE_HIGHLIGHT_BACKGROUND)
+        .replace("__HIGHLIGHT_BORDER__", DATATYPE_REFERENCE_HIGHLIGHT_BORDER)
+        .replace(
+            "__HIGHLIGHT_BORDER_WIDTH__",
+            str(DATATYPE_REFERENCE_HIGHLIGHT_BORDER_WIDTH),
+        )
+    )
     additions = [
         legend,
         TOOLTIP_CSS,
         PHYSICS_DISABLE_JS,
         INTERACTION_JS,
         node_tooltip,
+        datatype_reference,
         "</body>",
     ]
     html = html.replace("</body>", "\n".join(additions))

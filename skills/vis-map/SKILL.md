@@ -13,10 +13,14 @@ python3 <skill-dir>/scripts/visualize.py ARCHITECTURE.md architecture-graph.html
 
 Hover a node to open its detail box; it stays open while the pointer is over
 that node or the box and closes after leaving both. Edges show their metadata
-on hover, and parallel edges between the same nodes are routed into distinct
-curved lanes regardless of their line styles. Do not improvise colors, shapes,
-or labels per invocation: the script's style presets are the source of truth,
-and other `- **Type**: X` tags use deterministic fallback styles.
+on hover. An `Interact` edge's `DataType` value links to a DataType node only
+when it exactly matches a node heading. Hovering or selecting that edge
+highlights the referenced node. If no matching node exists, the value remains a
+plain edge label; no node is invented and no warning is emitted. Parallel edges
+between the same nodes are routed into distinct curved lanes regardless of
+their line styles. Do not improvise colors, shapes, or labels per invocation:
+the script's style presets are the source of truth, and other
+`- **Type**: X` tags use deterministic fallback styles.
 
 If the script fails, do not debug on your own. Report the error and ask the user
 for permission to debug before investigating.

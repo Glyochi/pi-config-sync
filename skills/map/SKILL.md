@@ -34,6 +34,8 @@ For code-reference metadata:
 - **Interact** (Entity → Entity): references a DataType (the data flowing).
 - **Composed of** (DataType → DataType): nested schemas.
 
+An `Interact` edge's `DataType` field may be a simple string label. When its value exactly matches a `###` heading under `## DataTypes`, it also references that DataType node. Do not create a DataType node solely to resolve an edge label; keep the string when no node is modeled.
+
 ## Importance tiers
 
 Importance is a small, user-steered scale, not a fixed enum. Start low (2–3 tiers, e.g. Critical / Significant / Peripheral). The user may expand or contract the number of tiers at any time, including when revisiting an existing map.
@@ -54,7 +56,7 @@ Importance is a small, user-steered scale, not a fixed enum. Start low (2–3 ti
 
 7. **Assign importance.** Give each Entity a tier from the current scale. DataTypes carry no importance level.
 
-8. **Model edges.** Record `Contains` (hierarchy), `Interact` (with its DataType), and `Composed of` (DataType nesting). Tag every non-hierarchical edge with `- **Type**: X` in the Relationships section.
+8. **Model edges.** Record `Contains` (hierarchy), `Interact` (with its data-type label or matching DataType node), and `Composed of` (DataType nesting). An `Interact` edge's `DataType` value references a node only when it exactly matches a heading under `## DataTypes`; do not create nodes just to resolve labels. Tag every non-hierarchical edge with `- **Type**: X` in the Relationships section.
 
 9. **Update the file only when requested, except for the initial creation in step 2.** Conversation, questions, corrections, and checkpoints do not by themselves authorize a later file update. When the user requests an update, summarize what will change and show a focused diff (or concise before/after snippets) for the affected nodes and relationships. Do not print or draft the entire `ARCHITECTURE.md` in chat; omit unchanged sections. Let the user steer the proposed changes, then write only after the user explicitly confirms the update. Preserve content the user did not ask to change.
 
