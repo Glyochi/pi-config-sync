@@ -215,6 +215,14 @@ INTERACTION_JS = """
   var EDGE_CLEARANCE = 6;
   var BEND_ROUNDNESS = 0.3;
 
+  // Parallel edges (any two edges joining the same pair of nodes, in either
+  // direction) are fanned onto separate lanes instead of drawn on top of each
+  // other. curvedCW bulges to the LEFT of from->to and curvedCCW to the right,
+  // so a lane is picked as a geometric side and then flipped into a
+  // travel-relative type: both directions of an anti-parallel pair must share
+  // the same travel side to land on opposite sides of the chord.
+  var LANE_ROUNDNESS = 0.2;
+
   // Segment vs axis-aligned box (Liang-Barsky), box inflated by the clearance.
   function segmentHitsBox(ax, ay, bx, by, box) {
     var x1 = box.left - EDGE_CLEARANCE;
@@ -244,6 +252,55 @@ INTERACTION_JS = """
     return true;
   }
 
+  function edgePairKey(edge) {
+    var ends = [String(edge.from), String(edge.to)];
+    ends.sort();
+    return JSON.stringify(ends);
+  }
+
+  // +1 when from->to runs in the canonical (lexicographic) direction.
+  function dirSign(edge) {
+    return String(edge.from) < String(edge.to) ? 1 : -1;
+  }
+
+  // Map of edge id -> smooth option, for edges sharing a node pair with at
+  // least one other edge. Lane 0 takes one geometric side, lane 1 the other,
+  // and higher lanes repeat the sides further out so same-direction duplicates
+  // fan out as well. The order is deterministic so lanes stay stable across
+  // reroutes.
+  function parallelLanes(edges) {
+    var groups = {};
+    edges.forEach(function(edge) {
+      var key = edgePairKey(edge);
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(edge);
+    });
+
+    var lanes = {};
+    Object.keys(groups).forEach(function(key) {
+      var group = groups[key];
+      if (group.length < 2) return;
+      group.sort(function(x, y) {
+        var dx = dirSign(x);
+        var dy = dirSign(y);
+        if (dx !== dy) return dy - dx;
+        var sx = String(x.id);
+        var sy = String(y.id);
+        return sx < sy ? -1 : (sx > sy ? 1 : 0);
+      });
+      group.forEach(function(edge, i) {
+        var side = i % 2 === 0 ? 1 : -1;
+        var mag = Math.floor(i / 2) + 1;
+        lanes[edge.id] = {
+          enabled: true,
+          type: side * dirSign(edge) > 0 ? "curvedCW" : "curvedCCW",
+          roundness: Math.min(LANE_ROUNDNESS * mag, 1)
+        };
+      });
+    });
+    return lanes;
+  }
+
   function rerouteEdges() {
     var positions = network.getPositions();
     var ids = Object.keys(positions);
@@ -252,8 +309,11 @@ INTERACTION_JS = """
       boxes[id] = network.getBoundingBox(id);
     });
 
+    var edges = network.body.data.edges.get();
+    var lanes = parallelLanes(edges);
+
     var updates = [];
-    network.body.data.edges.get().forEach(function(edge) {
+    edges.forEach(function(edge) {
       var a = positions[edge.from];
       var b = positions[edge.to];
       if (!a || !b) return;
@@ -269,7 +329,7 @@ INTERACTION_JS = """
       }
 
       if (!blocked) {
-        updates.push({ id: edge.id, smooth: false });
+        updates.push({ id: edge.id, smooth: lanes[edge.id] || false });
         return;
       }
 
@@ -278,12 +338,15 @@ INTERACTION_JS = """
       var cx = (blocked.left + blocked.right) / 2;
       var cy = (blocked.top + blocked.bottom) / 2;
       var side = (b.x - a.x) * (cy - a.y) - (b.y - a.y) * (cx - a.x);
+      // The obstacle picks the side (clearance beats lane spacing), but a
+      // parallel edge still adds its lane roundness to stay off its twin.
+      var lane = lanes[edge.id];
       updates.push({
         id: edge.id,
         smooth: {
           enabled: true,
           type: side > 0 ? "curvedCW" : "curvedCCW",
-          roundness: BEND_ROUNDNESS
+          roundness: Math.min(BEND_ROUNDNESS + (lane ? lane.roundness : 0), 1)
         }
       });
     });
