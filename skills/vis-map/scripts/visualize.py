@@ -205,7 +205,95 @@ INTERACTION_JS = """
     var state = undoStack.pop();
     if (!state) return;
     network.body.data.nodes.update(state);
+    rerouteEdges();
   }
+
+  // --- bend only the edges that would otherwise cut through a node -----------
+  // Edges stay straight unless their path crosses an unrelated node, in which
+  // case just that edge is bent clear of it. vis-network's own "dynamic" routing
+  // is not obstacle avoidance: it bends every edge by a fixed formula.
+  var EDGE_CLEARANCE = 6;
+  var BEND_ROUNDNESS = 0.3;
+
+  // Segment vs axis-aligned box (Liang-Barsky), box inflated by the clearance.
+  function segmentHitsBox(ax, ay, bx, by, box) {
+    var x1 = box.left - EDGE_CLEARANCE;
+    var x2 = box.right + EDGE_CLEARANCE;
+    var y1 = box.top - EDGE_CLEARANCE;
+    var y2 = box.bottom + EDGE_CLEARANCE;
+    var dx = bx - ax;
+    var dy = by - ay;
+    var t0 = 0;
+    var t1 = 1;
+    var p = [-dx, dx, -dy, dy];
+    var q = [ax - x1, x2 - ax, ay - y1, y2 - ay];
+    for (var i = 0; i < 4; i++) {
+      if (p[i] === 0) {
+        if (q[i] < 0) return false;
+      } else {
+        var r = q[i] / p[i];
+        if (p[i] < 0) {
+          if (r > t1) return false;
+          if (r > t0) t0 = r;
+        } else {
+          if (r < t0) return false;
+          if (r < t1) t1 = r;
+        }
+      }
+    }
+    return true;
+  }
+
+  function rerouteEdges() {
+    var positions = network.getPositions();
+    var ids = Object.keys(positions);
+    var boxes = {};
+    ids.forEach(function(id) {
+      boxes[id] = network.getBoundingBox(id);
+    });
+
+    var updates = [];
+    network.body.data.edges.get().forEach(function(edge) {
+      var a = positions[edge.from];
+      var b = positions[edge.to];
+      if (!a || !b) return;
+
+      var blocked = null;
+      for (var i = 0; i < ids.length; i++) {
+        var id = ids[i];
+        if (id === edge.from || id === edge.to) continue;
+        if (segmentHitsBox(a.x, a.y, b.x, b.y, boxes[id])) {
+          blocked = boxes[id];
+          break;
+        }
+      }
+
+      if (!blocked) {
+        updates.push({ id: edge.id, smooth: false });
+        return;
+      }
+
+      // Sign of the cross product says which side of a->b the obstacle sits on;
+      // bend the other way so the edge curves around it.
+      var cx = (blocked.left + blocked.right) / 2;
+      var cy = (blocked.top + blocked.bottom) / 2;
+      var side = (b.x - a.x) * (cy - a.y) - (b.y - a.y) * (cx - a.x);
+      updates.push({
+        id: edge.id,
+        smooth: {
+          enabled: true,
+          type: side > 0 ? "curvedCW" : "curvedCCW",
+          roundness: BEND_ROUNDNESS
+        }
+      });
+    });
+
+    network.body.data.edges.update(updates);
+  }
+
+  network.once("stabilizationIterationsDone", rerouteEdges);
+  network.on("dragEnd", rerouteEdges);
+  setTimeout(rerouteEdges, 2500);
 
   network.on("dragEnd", endChange);
 
