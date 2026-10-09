@@ -208,10 +208,12 @@ INTERACTION_JS = """
     rerouteEdges();
   }
 
-  // --- bend only the edges that would otherwise cut through a node -----------
-  // Edges stay straight unless their path crosses an unrelated node, in which
-  // case just that edge is bent clear of it. vis-network's own "dynamic" routing
-  // is not obstacle avoidance: it bends every edge by a fixed formula.
+  // --- curve reciprocal edges apart and route around blocking nodes ----------
+  // Opposite directed edges otherwise lie on top of each other. Using curvedCW
+  // for both directions gives each edge the opposite physical arc, since
+  // vis-network calculates the curve relative to each edge's from->to direction.
+  // Other edges stay straight unless their path crosses an unrelated node;
+  // vis-network's own "dynamic" routing is not obstacle avoidance.
   var EDGE_CLEARANCE = 6;
   var BEND_ROUNDNESS = 0.3;
 
@@ -253,10 +255,31 @@ INTERACTION_JS = """
     });
 
     var updates = [];
-    network.body.data.edges.get().forEach(function(edge) {
+    var edges = network.body.data.edges.get();
+    var directedPairs = new Set();
+    edges.forEach(function(edge) {
+      if (edge.from !== edge.to) {
+        directedPairs.add(JSON.stringify([edge.from, edge.to]));
+      }
+    });
+
+    edges.forEach(function(edge) {
       var a = positions[edge.from];
       var b = positions[edge.to];
       if (!a || !b) return;
+
+      if (edge.from !== edge.to
+          && directedPairs.has(JSON.stringify([edge.to, edge.from]))) {
+        updates.push({
+          id: edge.id,
+          smooth: {
+            enabled: true,
+            type: "curvedCW",
+            roundness: BEND_ROUNDNESS
+          }
+        });
+        return;
+      }
 
       var blocked = null;
       for (var i = 0; i < ids.length; i++) {
