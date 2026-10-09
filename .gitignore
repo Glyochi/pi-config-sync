@@ -58,3 +58,5 @@ auth*
 **/node_modules/
 .DS_Store
 # <<< pi-config-sync managed
+
+*.pyc

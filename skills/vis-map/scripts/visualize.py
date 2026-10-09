@@ -65,6 +65,7 @@ IMPORTANCE_ORDER = [
     "minor",
     "trivial",
 ]
+IMPORTANCE_RANK = {tier: rank for rank, tier in enumerate(IMPORTANCE_ORDER)}
 
 # Unknown node types are categorical, not ordinal, so they get a deterministic
 # light color from a qualitative (hue-distinct) palette rather than the ramp.
@@ -100,56 +101,72 @@ COMPOSED_OF_COLOR = "#A020F0"
 COMPOSED_OF_DASHES = [2, 6]
 UNKNOWN_EDGE_DASHES = False
 
+# Known styles are declared centrally; unknown types use deterministic fallbacks.
+NODE_STYLE_PRESETS = {
+    "DataType": {"shape": DATATYPE_SHAPE, "color": DATATYPE_COLOR},
+}
+EDGE_STYLE_PRESETS = {
+    "Contains": {"color": CONTAINS_COLOR, "dashes": CONTAINS_DASHES},
+    "Interact": {"color": INTERACT_COLOR, "dashes": INTERACT_DASHES},
+    "Composed of": {"color": COMPOSED_OF_COLOR, "dashes": COMPOSED_OF_DASHES},
+}
+
 # Hex colors render correctly but read poorly in the legend, so they are mapped
 # to plain English names. The importance palette carries its own names.
 COLOR_NAMES = {"#2B7CE9": "blue", "#A020F0": "purple", DATATYPE_COLOR: "light blue"}
 COLOR_NAMES.update({color: name for name, color in IMPORTANCE_PALETTE})
 COLOR_NAMES.update({color: name for name, color in NODE_FALLBACK_PALETTE})
 
-OPTIONS = """
-{
-  "physics": {
-    "enabled": true,
-    "solver": "forceAtlas2Based",
-    "forceAtlas2Based": {
-      "gravitationalConstant": -120,
-      "centralGravity": 0.005,
-      "springLength": 250,
-      "springConstant": 0.05,
-      "damping": 0.4,
-      "avoidOverlap": 0.5
+OPTIONS = {
+    "physics": {
+        "enabled": True,
+        "solver": "forceAtlas2Based",
+        "forceAtlas2Based": {
+            "gravitationalConstant": -120,
+            "centralGravity": 0.005,
+            "springLength": 250,
+            "springConstant": 0.05,
+            "damping": 0.4,
+            "avoidOverlap": 0.5,
+        },
+        "stabilization": {
+            "enabled": True,
+            "iterations": 300,
+            "updateInterval": 25,
+        },
     },
-    "stabilization": {"enabled": true, "iterations": 300, "updateInterval": 25}
-  },
-  "edges": {
-    "smooth": false
-  },
-  "interaction": {
-    "multiselect": true,
-    "dragNodes": true,
-    "dragView": true
-  }
+    "edges": {"smooth": False},
+    "interaction": {
+        "hover": True,
+        "tooltipDelay": 200,
+        "multiselect": True,
+        "dragNodes": True,
+        "dragView": True,
+    },
 }
-"""
 
 # Disable physics after initial layout so nodes can be dragged freely without
 # pulling neighbors. Uses the stabilization event plus a timeout fallback.
 PHYSICS_DISABLE_JS = """
 <script type="text/javascript">
+(function () {
   function disablePhysics() {
     network.setOptions({ physics: { enabled: false } });
   }
   network.once("stabilizationIterationsDone", disablePhysics);
   setTimeout(disablePhysics, 5000);
+})();
 </script>
 """
 
-# Marquee (drag-box) multi-select on the background, and edge bending by dragging
-# an edge. Background drag selects nodes; edge drag adjusts the edge curve.
+# Custom network interactions: undo node drags, select nodes with Shift-drag,
+# and separate parallel edges or route around obstacles after layout settles.
 INTERACTION_JS = """
 <script type="text/javascript">
+(function () {
   var container = document.getElementById("mynetwork");
-  var canvas = container.getElementsByTagName("canvas")[0];
+  var canvas = container && container.querySelector("canvas");
+  if (!canvas) return;
 
   function getPos(e) {
     var rect = container.getBoundingClientRect();
@@ -165,7 +182,8 @@ INTERACTION_JS = """
   container.appendChild(selectionBox);
 
   var selecting = false;
-  var startX = 0, startY = 0;
+  var startX = 0;
+  var startY = 0;
 
   // --- undo (Ctrl+Z) ---------------------------------------------------------
   // A layout snapshot is taken when a drag begins and pushed only if the layout
@@ -177,7 +195,9 @@ INTERACTION_JS = """
     var parts = [];
     var positions = network.getPositions();
     Object.keys(positions).sort().forEach(function(id) {
-      parts.push(id + ":" + Math.round(positions[id].x) + "," + Math.round(positions[id].y));
+      parts.push(
+        id + ":" + Math.round(positions[id].x) + "," + Math.round(positions[id].y)
+      );
     });
     return parts.join("|");
   }
@@ -208,12 +228,23 @@ INTERACTION_JS = """
     rerouteEdges();
   }
 
-  // --- bend only the edges that would otherwise cut through a node -----------
-  // Edges stay straight unless their path crosses an unrelated node, in which
-  // case just that edge is bent clear of it. vis-network's own "dynamic" routing
-  // is not obstacle avoidance: it bends every edge by a fixed formula.
+  // --- separate parallel edges and route around blocking nodes --------------
+  // Every edge between the same nodes gets its own curved lane, regardless of
+  // direction or line style. Curve type is relative to edge direction, so map
+  // each lane against a canonical endpoint order. Single edges stay straight
+  // unless they cross an unrelated node; "dynamic" routing is not avoidance.
   var EDGE_CLEARANCE = 6;
   var BEND_ROUNDNESS = 0.3;
+  var MAX_PARALLEL_ROUNDNESS = 0.9;
+
+  function curve(type, roundness) {
+    return { enabled: true, type: type, roundness: roundness };
+  }
+
+  function parallelRoundness(level) {
+    return BEND_ROUNDNESS
+      + (MAX_PARALLEL_ROUNDNESS - BEND_ROUNDNESS) * level / (level + 3);
+  }
 
   // Parallel edges (any two edges joining the same pair of nodes, in either
   // direction) are fanned onto separate lanes instead of drawn on top of each
@@ -313,10 +344,50 @@ INTERACTION_JS = """
     var lanes = parallelLanes(edges);
 
     var updates = [];
+    var edges = network.body.data.edges.get();
+    var parallelGroups = {};
+    edges.forEach(function(edge) {
+      if (edge.from === edge.to) return;
+      var endpoints = [String(edge.from), String(edge.to)].sort();
+      var key = JSON.stringify(endpoints);
+      if (!parallelGroups[key]) {
+        parallelGroups[key] = { canonicalFrom: endpoints[0], edges: [] };
+      }
+      parallelGroups[key].edges.push(edge);
+    });
+
+    var parallelCurves = new Map();
+    Object.keys(parallelGroups).forEach(function(key) {
+      var groupData = parallelGroups[key];
+      var group = groupData.edges;
+      if (group.length < 2) return;
+      group.sort(function(a, b) {
+        var aId = String(a.id);
+        var bId = String(b.id);
+        return aId < bId ? -1 : aId > bId ? 1 : 0;
+      });
+      var canonicalFrom = groupData.canonicalFrom;
+      // Alternate sides first, then widen each side's lane for extra edges.
+      group.forEach(function(edge, index) {
+        var laneSide = index % 2 === 0 ? 1 : -1;
+        var direction = String(edge.from) === canonicalFrom ? 1 : -1;
+        parallelCurves.set(edge.id, curve(
+          laneSide * direction > 0 ? "curvedCW" : "curvedCCW",
+          parallelRoundness(Math.floor(index / 2))
+        ));
+      });
+    });
+
     edges.forEach(function(edge) {
       var a = positions[edge.from];
       var b = positions[edge.to];
       if (!a || !b) return;
+
+      var parallelCurve = parallelCurves.get(edge.id);
+      if (parallelCurve) {
+        updates.push({ id: edge.id, smooth: parallelCurve });
+        return;
+      }
 
       var blocked = null;
       for (var i = 0; i < ids.length; i++) {
@@ -343,11 +414,10 @@ INTERACTION_JS = """
       var lane = lanes[edge.id];
       updates.push({
         id: edge.id,
-        smooth: {
-          enabled: true,
-          type: side > 0 ? "curvedCW" : "curvedCCW",
-          roundness: Math.min(BEND_ROUNDNESS + (lane ? lane.roundness : 0), 1)
-        }
+        smooth: curve(
+          side > 0 ? "curvedCW" : "curvedCCW",
+          BEND_ROUNDNESS
+        )
       });
     });
 
@@ -413,7 +483,9 @@ INTERACTION_JS = """
       var positions = network.getPositions();
       for (var id in positions) {
         var domPos = network.canvasToDOM(positions[id]);
-        if (domPos.x >= x1 && domPos.x <= x2 && domPos.y >= y1 && domPos.y <= y2) {
+        if (
+          domPos.x >= x1 && domPos.x <= x2 && domPos.y >= y1 && domPos.y <= y2
+        ) {
           selected.push(id);
         }
       }
@@ -421,6 +493,7 @@ INTERACTION_JS = """
     }
     endChange();
   });
+})();
 </script>
 """
 
@@ -551,44 +624,41 @@ def parse_relationships(lines):
 # Styling
 # ---------------------------------------------------------------------------
 
-_tier_rank = {}
-_tier_colors = {}
-
-
-def importance_rank(importance):
-    """Sort key: canonical scale position, then order of first appearance."""
-    key = importance.strip().lower()
-    if key in IMPORTANCE_ORDER:
-        return IMPORTANCE_ORDER.index(key)
-    if key not in _tier_rank:
-        _tier_rank[key] = len(IMPORTANCE_ORDER) + len(_tier_rank)
-    return _tier_rank[key]
-
-
 def order_importance_tiers(tiers):
-    """Sort the tiers present highest -> lowest and assign ramp colors.
-
-    Colors are sampled across the whole sequential ramp, so the top tier is
-    always the strongest color and the bottom the palest, whatever the count.
-    """
+    """Return ordered importance tiers and their assigned colors."""
     unique = {}
     for tier in tiers:
-        if tier and tier.strip():
-            unique.setdefault(tier.strip().lower(), tier.strip())
-    ordered = sorted(unique.values(), key=importance_rank)
-    last = len(IMPORTANCE_PALETTE) - 1
-    for i, tier in enumerate(ordered):
-        idx = 0 if len(ordered) <= 1 else int(round(i * last / (len(ordered) - 1)))
-        _tier_colors[tier.lower()] = IMPORTANCE_PALETTE[idx]
-    return ordered
+        if tier:
+            label = tier.strip()
+            if label:
+                unique.setdefault(label.lower(), label)
+
+    first_seen = {key: index for index, key in enumerate(unique)}
+
+    def sort_key(tier):
+        key = tier.lower()
+        if key in IMPORTANCE_RANK:
+            return 0, IMPORTANCE_RANK[key]
+        return 1, first_seen[key]
+
+    ordered = sorted(unique.values(), key=sort_key)
+    last_color = len(IMPORTANCE_PALETTE) - 1
+    tier_colors = {}
+    for index, tier in enumerate(ordered):
+        color_index = (
+            0
+            if len(ordered) <= 1
+            else round(index * last_color / (len(ordered) - 1))
+        )
+        tier_colors[tier.lower()] = IMPORTANCE_PALETTE[color_index][1]
+    return ordered, tier_colors
 
 
-def entity_color(importance):
-    """Light background for an importance tier (black label stays readable)."""
-    if importance is None:
+def entity_color(importance, tier_colors):
+    """Return a readable entity color for its importance tier."""
+    if not importance:
         return ENTITY_DEFAULT_COLOR
-    entry = _tier_colors.get(importance.strip().lower())
-    return entry[1] if entry else ENTITY_DEFAULT_COLOR
+    return tier_colors.get(importance.strip().lower(), ENTITY_DEFAULT_COLOR)
 
 
 def fallback_node_color(type_name):
@@ -603,21 +673,22 @@ def fallback_edge_color(type_name):
     return EDGE_FALLBACK_PALETTE[idx]
 
 
-def node_style(node_type, fields):
+def node_style(node_type, fields, tier_colors):
     if node_type == "Entity":
-        return {"shape": ENTITY_SHAPE, "color": entity_color(fields.get("Importance"))}
-    if node_type == "DataType":
-        return {"shape": DATATYPE_SHAPE, "color": DATATYPE_COLOR}
+        return {
+            "shape": ENTITY_SHAPE,
+            "color": entity_color(fields.get("Importance"), tier_colors),
+        }
+    preset = NODE_STYLE_PRESETS.get(node_type)
+    if preset is not None:
+        return preset.copy()
     return {"shape": UNKNOWN_NODE_SHAPE, "color": fallback_node_color(node_type)}
 
 
 def edge_style(edge_type):
-    if edge_type == "Contains":
-        return {"color": CONTAINS_COLOR, "dashes": CONTAINS_DASHES}
-    if edge_type == "Interact":
-        return {"color": INTERACT_COLOR, "dashes": INTERACT_DASHES}
-    if edge_type == "Composed of":
-        return {"color": COMPOSED_OF_COLOR, "dashes": COMPOSED_OF_DASHES}
+    preset = EDGE_STYLE_PRESETS.get(edge_type)
+    if preset is not None:
+        return preset.copy()
     return {"color": fallback_edge_color(edge_type), "dashes": UNKNOWN_EDGE_DASHES}
 
 
@@ -650,86 +721,173 @@ def edge_title(source, target, edge_type, fields):
     return "\n".join(lines)
 
 
-# Cap the built-in vis-network tooltip (still used for edges) so long text wraps
-# instead of stretching the popover across the screen.
+# Keep edge tooltips and the interactive node detail box readable.
 TOOLTIP_CSS = """
 <style type="text/css">
   div.vis-tooltip {
-    max-width: 340px !important;
+    max-width: min(420px, calc(100vw - 16px)) !important;
     white-space: pre-wrap !important;
-    word-break: break-word !important;
+    overflow-wrap: anywhere !important;
+  }
+  div.architecture-node-tooltip {
+    position: absolute;
+    display: none;
+    z-index: 2000;
+    box-sizing: border-box;
+    max-width: min(420px, calc(100% - 16px));
+    max-height: min(50vh, calc(100% - 16px));
+    overflow: auto;
+    padding: 8px 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.98);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    color: #222;
+    font: 12px/1.5 sans-serif;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: text;
+    cursor: text;
   }
 </style>
 """
 
-# Node description box. Opened by Ctrl/Cmd+clicking a node and dismissed by
-# clicking anywhere outside it, so there is no hover timing to get wrong. Uses
-# vis-network's own hit-testing (getNodeAt) and sits beside the node, so it never
-# covers the node it describes.
-POPOVER_JS = """
+NODE_TOOLTIP_JS = """
 <script type="text/javascript">
-var NODE_DESCRIPTIONS = __DESCRIPTIONS__;
 (function () {
-  if (typeof canvas === "undefined" || !canvas || typeof getPos !== "function") return;
+  var NODE_DESCRIPTIONS = __NODE_DESCRIPTIONS__;
+  var container = document.getElementById("mynetwork");
+  if (!container) return;
 
-  var box = document.createElement("div");
-  box.style.cssText = "position:fixed;display:none;max-width:340px;max-height:50vh;"
-    + "overflow:auto;background:rgba(255,255,255,0.98);border:1px solid #ccc;"
-    + "border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.2);padding:8px 10px;"
-    + "z-index:2000;font-family:sans-serif;font-size:12px;line-height:1.5;color:#222;"
-    + "white-space:pre-wrap;word-break:break-word;"
-    + "user-select:text;-webkit-user-select:text;cursor:text;";
-  document.body.appendChild(box);
+  var tooltip = document.createElement("div");
+  tooltip.className = "architecture-node-tooltip";
+  tooltip.setAttribute("role", "tooltip");
+  tooltip.setAttribute("aria-hidden", "true");
+  container.appendChild(tooltip);
 
-  function hide() {
-    box.style.display = "none";
-  }
+  var activeNode = null;
+  var nodeHovered = false;
+  var tooltipHovered = false;
+  var hideTimer = null;
+  var HIDE_DELAY = 300;
 
-  // Sit just outside the node, so the box never covers the node it describes.
-  function place(nodeId) {
-    var w = box.offsetWidth;
-    var h = box.offsetHeight;
-    var left;
-    var top;
-    try {
-      var rect = network.getBoundingBox(nodeId);
-      var tl = network.canvasToDOM({ x: rect.left, y: rect.top });
-      var br = network.canvasToDOM({ x: rect.right, y: rect.bottom });
-      left = br.x + 12;
-      top = tl.y;
-      if (left + w > window.innerWidth - 8) left = tl.x - w - 12;
-    } catch (err) {
-      var p = network.canvasToDOM(network.getPositions()[nodeId]);
-      left = p.x + 24;
-      top = p.y + 24;
+  function clearHideTimer() {
+    if (hideTimer !== null) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
     }
-    left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
-    top = Math.max(8, Math.min(top, window.innerHeight - h - 8));
-    box.style.left = left + "px";
-    box.style.top = top + "px";
   }
 
-  function show(nodeId) {
-    box.textContent = NODE_DESCRIPTIONS[nodeId];
-    box.style.display = "block";
-    place(nodeId);
+  function hideIfOutside() {
+    hideTimer = null;
+    if (nodeHovered || tooltipHovered) return;
+    tooltip.style.display = "none";
+    tooltip.setAttribute("aria-hidden", "true");
+    activeNode = null;
   }
 
-  // Capture phase so vis-network cannot swallow the event first.
-  document.addEventListener("click", function (e) {
-    if (box.contains(e.target)) return;
-    if (e.ctrlKey || e.metaKey) {
-      var nodeId = network.getNodeAt(getPos(e));
-      if (nodeId !== undefined && NODE_DESCRIPTIONS[nodeId]) {
-        show(nodeId);
-        return;
-      }
+  function scheduleHide() {
+    if (hideTimer === null) {
+      hideTimer = setTimeout(hideIfOutside, HIDE_DELAY);
     }
-    hide();
-  }, true);
+  }
 
-  document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape") hide();
+  function pointerPosition(event) {
+    var rect = container.getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  }
+
+  function isOverActiveNode(event) {
+    return activeNode !== null
+      && !tooltip.contains(event.target)
+      && network.getNodeAt(pointerPosition(event)) === activeNode;
+  }
+
+  function positionTooltip(nodeId) {
+    var bounds = network.getBoundingBox(nodeId);
+    var topLeft = network.canvasToDOM({ x: bounds.left, y: bounds.top });
+    var bottomRight = network.canvasToDOM({ x: bounds.right, y: bounds.bottom });
+    var padding = 8;
+    var gap = 12;
+    var width = tooltip.offsetWidth;
+    var height = tooltip.offsetHeight;
+    var left = bottomRight.x + gap;
+    var top = topLeft.y;
+
+    if (left + width > container.clientWidth - padding) {
+      left = topLeft.x - width - gap;
+    }
+    left = Math.max(
+      padding,
+      Math.min(left, container.clientWidth - width - padding)
+    );
+    top = Math.max(
+      padding,
+      Math.min(top, container.clientHeight - height - padding)
+    );
+    tooltip.style.left = left + "px";
+    tooltip.style.top = top + "px";
+  }
+
+  function hideTooltip() {
+    clearHideTimer();
+    tooltip.style.display = "none";
+    tooltip.setAttribute("aria-hidden", "true");
+    activeNode = null;
+    nodeHovered = false;
+    tooltipHovered = false;
+  }
+
+  function showTooltip(nodeId) {
+    var description = NODE_DESCRIPTIONS[String(nodeId)];
+    if (description === undefined) return;
+    clearHideTimer();
+    activeNode = nodeId;
+    nodeHovered = true;
+    tooltip.textContent = description;
+    tooltip.style.display = "block";
+    tooltip.setAttribute("aria-hidden", "false");
+    positionTooltip(nodeId);
+  }
+
+  network.on("hoverNode", function (params) {
+    showTooltip(params.node);
+  });
+  network.on("blurNode", function (params) {
+    if (params.node === activeNode) nodeHovered = false;
+    scheduleHide();
+  });
+
+  tooltip.addEventListener("mouseenter", function () {
+    tooltipHovered = true;
+    clearHideTimer();
+  });
+  tooltip.addEventListener("mouseleave", function (event) {
+    tooltipHovered = false;
+    nodeHovered = isOverActiveNode(event);
+    if (nodeHovered) clearHideTimer();
+    else scheduleHide();
+  });
+  container.addEventListener("mousemove", function (event) {
+    if (activeNode === null || tooltip.contains(event.target)) return;
+    nodeHovered = isOverActiveNode(event);
+    if (nodeHovered) clearHideTimer();
+    else scheduleHide();
+  });
+  container.addEventListener("mouseleave", function () {
+    nodeHovered = false;
+    scheduleHide();
+  });
+
+  network.on("dragStart", hideTooltip);
+  network.on("zoom", function () {
+    if (activeNode !== null) positionTooltip(activeNode);
+  });
+  network.on("stabilizationIterationsDone", function () {
+    if (activeNode !== null) positionTooltip(activeNode);
+  });
+  window.addEventListener("resize", function () {
+    if (activeNode !== null) positionTooltip(activeNode);
   });
 })();
 </script>
@@ -740,72 +898,59 @@ var NODE_DESCRIPTIONS = __DESCRIPTIONS__;
 # Graph construction
 # ---------------------------------------------------------------------------
 
-def build_graph(entities, datatypes, relationships):
+def build_graph(entities, datatypes, relationships, tier_colors):
     net = Network(directed=True, height="750px", width="100%")
     node_types = {}
     edge_types = {}
     known_nodes = set()
     descriptions = {}
 
-    def ensure_node(name):
-        """Resolve an edge endpoint, auto-creating it if it is not defined.
-
-        A trailing qualifier such as ``Worker Process (data plane)`` resolves to
-        the base node when one exists; otherwise the referenced name is added as
-        an Unknown node so the edge is never dropped.
-        """
-        if name in known_nodes:
-            return name
-        base = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
-        if base and base in known_nodes:
-            return base
+    def add_node(name, node_type, fields):
+        style = node_style(node_type, fields, tier_colors)
         known_nodes.add(name)
-        style = node_style("Unknown", {})
-        node_types["Unknown"] = style
-        descriptions[name] = node_title(name, "Unknown", {})
+        node_types[node_type] = style
+        descriptions[name] = node_title(name, node_type, fields)
         net.add_node(
             name,
             label=name,
             shape=style["shape"],
             color=style["color"],
         )
+
+    def ensure_node(name):
+        """Resolve qualified references or add a generic unknown node."""
+        if name in known_nodes:
+            return name
+        base = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
+        if base and base in known_nodes:
+            return base
+        add_node(name, "Unknown", {})
         return name
 
+    def add_edge(
+        source, target, edge_type, fields=None, bidirectional=False, label=None
+    ):
+        style = edge_style(edge_type)
+        edge_types[edge_type] = style
+        options = {
+            "color": style["color"],
+            "dashes": style["dashes"],
+            "arrows": "to,from" if bidirectional else "to",
+            "title": edge_title(source, target, edge_type, fields or {}),
+        }
+        if label:
+            options["label"] = label
+        net.add_edge(source, target, **options)
+
     for e in entities:
-        known_nodes.add(e["name"])
-        style = node_style(e["type"], e["fields"])
-        node_types[e["type"]] = style
-        descriptions[e["name"]] = node_title(e["name"], e["type"], e["fields"])
-        net.add_node(
-            e["name"],
-            label=e["name"],
-            shape=style["shape"],
-            color=style["color"],
-        )
+        add_node(e["name"], e["type"], e["fields"])
 
     for e in entities:
         if e["parent"]:
-            style = edge_style("Contains")
-            edge_types["Contains"] = style
-            net.add_edge(
-                e["parent"],
-                e["name"],
-                color=style["color"],
-                dashes=style["dashes"],
-                arrows="to",
-            )
+            add_edge(e["parent"], e["name"], "Contains")
 
     for d in datatypes:
-        known_nodes.add(d["name"])
-        style = node_style(d["type"], d["fields"])
-        node_types[d["type"]] = style
-        descriptions[d["name"]] = node_title(d["name"], d["type"], d["fields"])
-        net.add_node(
-            d["name"],
-            label=d["name"],
-            shape=style["shape"],
-            color=style["color"],
-        )
+        add_node(d["name"], d["type"], d["fields"])
 
     for d in datatypes:
         for entry in d["composed_of"]:
@@ -813,36 +958,24 @@ def build_graph(entities, datatypes, relationships):
                 c = c.strip()
                 if not c:
                     continue
-                style = edge_style("Composed of")
-                edge_types["Composed of"] = style
-                net.add_edge(
-                    d["name"],
-                    ensure_node(c),
-                    color=style["color"],
-                    dashes=style["dashes"],
-                    arrows="to",
-                )
+                add_edge(d["name"], ensure_node(c), "Composed of")
 
     for r in relationships:
         source = ensure_node(r["source"])
         target = ensure_node(r["target"])
-        style = edge_style(r["type"])
-        edge_types[r["type"]] = style
-        label = r["fields"].get("DataType", "")
-        net.add_edge(
+        add_edge(
             source,
             target,
-            color=style["color"],
-            dashes=style["dashes"],
-            arrows="to,from" if r.get("bidirectional") else "to",
-            label=label,
-            title=edge_title(source, target, r["type"], r["fields"]),
+            r["type"],
+            fields=r["fields"],
+            bidirectional=r.get("bidirectional", False),
+            label=r["fields"].get("DataType"),
         )
 
     return net, node_types, edge_types, descriptions
 
 
-def build_legend(node_types, edge_types, entity_tiers):
+def build_legend(node_types, edge_types, entity_tiers, tier_colors):
     parts = [
         '<div style="position: fixed; top: 10px; left: 10px; background: rgba(255,255,255,0.95);'
         ' border: 1px solid #ccc; padding: 10px; z-index: 1000; font-family: sans-serif;'
@@ -853,7 +986,9 @@ def build_legend(node_types, edge_types, entity_tiers):
     for t, s in sorted(node_types.items()):
         if t == "Entity":
             tiers = ", ".join(
-                "{}={}".format(tier, color_label(entity_color(tier)))
+                "{}={}".format(
+                    tier, color_label(entity_color(tier, tier_colors))
+                )
                 for tier in entity_tiers
             )
             detail = "box, color by importance: " + tiers if tiers else "box"
@@ -892,32 +1027,32 @@ def main():
     datatypes = parse_datatypes(datatype_lines)
     relationships = parse_relationships(relationship_lines)
 
-    entity_tiers = order_importance_tiers(
+    entity_tiers, tier_colors = order_importance_tiers(
         e["fields"].get("Importance") for e in entities
     )
     net, node_types, edge_types, descriptions = build_graph(
-        entities, datatypes, relationships
+        entities, datatypes, relationships, tier_colors
     )
-    net.set_options(OPTIONS)
+    net.set_options(json.dumps(OPTIONS))
     net.write_html(output_path, open_browser=False)
 
     with open(output_path, "r", encoding="utf-8") as f:
         html = f.read()
-    legend = build_legend(node_types, edge_types, entity_tiers)
-    popover = POPOVER_JS.replace("__DESCRIPTIONS__", json.dumps(descriptions))
-    injected = (
-        legend
-        + "\n"
-        + TOOLTIP_CSS
-        + "\n"
-        + PHYSICS_DISABLE_JS
-        + "\n"
-        + INTERACTION_JS
-        + "\n"
-        + popover
-        + "\n</body>"
+    legend = build_legend(node_types, edge_types, entity_tiers, tier_colors)
+    # Prevent map content from closing the injected script element.
+    descriptions_json = json.dumps(descriptions).replace("<", r"\u003c")
+    node_tooltip = NODE_TOOLTIP_JS.replace(
+        "__NODE_DESCRIPTIONS__", descriptions_json
     )
-    html = html.replace("</body>", injected)
+    additions = [
+        legend,
+        TOOLTIP_CSS,
+        PHYSICS_DISABLE_JS,
+        INTERACTION_JS,
+        node_tooltip,
+        "</body>",
+    ]
+    html = html.replace("</body>", "\n".join(additions))
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html)
 
