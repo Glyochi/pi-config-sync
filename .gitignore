@@ -1,4 +1,6 @@
 
+
+*.pyc
 # >>> pi-config-sync managed — do not edit inside this block
 *
 !.gitignore
@@ -58,5 +60,3 @@ auth*
 **/node_modules/
 .DS_Store
 # <<< pi-config-sync managed
-
-*.pyc
