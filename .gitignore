@@ -1,6 +1,5 @@
 
 
-*.pyc
 # >>> pi-config-sync managed — do not edit inside this block
 *
 !.gitignore
