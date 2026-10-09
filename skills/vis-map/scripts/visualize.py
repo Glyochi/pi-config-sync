@@ -13,8 +13,9 @@ selected; hovering a DataType node also highlights its associated edges.
 Unmatched labels remain plain strings. DataType nodes are seeded on the right
 and all other nodes on the left before force-directed clustering;
 after stabilization, every node remains freely draggable in both directions.
-All styling is hardcoded below so the output is identical regardless of which
-model invokes this script.
+Nested heading containment is drawn as a live owner frame; hidden `Contains`
+edges remain physics springs for layout. All styling is hardcoded below so the
+output is identical regardless of which model invokes this script.
 
 Usage:
     python3 visualize.py [map/MAP.md] [map/map-graph.html]
@@ -107,16 +108,22 @@ DATATYPE_REFERENCE_HIGHLIGHT_BORDER = "#E67700"
 DATATYPE_REFERENCE_HIGHLIGHT_BORDER_WIDTH = 4
 DATATYPE_REFERENCE_HIGHLIGHT_EDGE_WIDTH = 4
 
+# Container frames are derived from live node bounds and never persisted.
+CONTAINMENT_FRAME_PADDING = 24
+CONTAINMENT_FRAME_FILL_ALPHA = 0.055
+CONTAINMENT_FRAME_STROKE_WIDTH = 1.5
+CONTAINMENT_FRAME_BORDER_COLOR = "#777777"
+CONTAINMENT_FRAME_HEADER_BORDER_COLOR = "#444444"
+
 # Unknown edge types keep saturated colors so the lines stay visible on white.
 EDGE_FALLBACK_PALETTE = [
     "purple", "teal", "brown", "pink", "olive",
     "cyan", "magenta", "lime", "navy", "maroon",
 ]
 
-# Known edge types: (color, dash pattern). vis-network edges use `dashes`
-# (false = solid, or an array of dash/gap pixel lengths), NOT `style` — `style`
-# is a node option and is silently ignored on edges, so every edge renders solid.
-CONTAINS_COLOR = "gray"
+# Known visible edge types use (color, dash pattern). Contains remains a hidden
+# physics edge; its visible style is the dynamically drawn owner frame.
+CONTAINS_COLOR = CONTAINMENT_FRAME_BORDER_COLOR
 CONTAINS_DASHES = False
 INTERACT_COLOR = "#2B7CE9"
 INTERACT_DASHES = [5, 5]
@@ -184,6 +191,185 @@ PHYSICS_DISABLE_JS = """
   }
   network.once("stabilizationIterationsDone", disablePhysics);
   setTimeout(disablePhysics, 5000);
+})();
+</script>
+"""
+
+# Ownership is shown as live frames around a container and all its descendants.
+# Owner nodes remain graph anchors, but their label and importance-colored header
+# are drawn here so their identity stays visible without duplicating the title.
+CONTAINMENT_FRAME_JS = """
+<script type="text/javascript">
+(function () {
+  var FRAMES = __CONTAINMENT_FRAMES__;
+  var FRAME_PADDING = __FRAME_PADDING__;
+  var FRAME_FILL_ALPHA = __FRAME_FILL_ALPHA__;
+  var FRAME_STROKE_WIDTH = __FRAME_STROKE_WIDTH__;
+  var FRAME_BORDER_COLOR = "__FRAME_BORDER_COLOR__";
+  var FRAME_HEADER_BORDER_COLOR = "__FRAME_HEADER_BORDER_COLOR__";
+  var HIGHLIGHT_BACKGROUND = "__HIGHLIGHT_BACKGROUND__";
+  var HIGHLIGHT_BORDER = "__HIGHLIGHT_BORDER__";
+  var HIGHLIGHT_BORDER_WIDTH = __HIGHLIGHT_BORDER_WIDTH__;
+  var hoveredNode = null;
+  window.mapContainmentLegendHighlight = false;
+
+  function rgba(color, alpha) {
+    var match = /^#([0-9a-f]{6})$/i.exec(String(color || ""));
+    if (!match) return color || "#E3E2DE";
+    var value = parseInt(match[1], 16);
+    return "rgba(" + ((value >> 16) & 255) + ","
+      + ((value >> 8) & 255) + "," + (value & 255) + "," + alpha + ")";
+  }
+
+  function drawRoundedRect(ctx, bounds, radius) {
+    var left = bounds.left;
+    var top = bounds.top;
+    var right = bounds.right;
+    var bottom = bounds.bottom;
+    var r = Math.min(radius, (right - left) / 2, (bottom - top) / 2);
+    ctx.beginPath();
+    ctx.moveTo(left + r, top);
+    ctx.lineTo(right - r, top);
+    ctx.quadraticCurveTo(right, top, right, top + r);
+    ctx.lineTo(right, bottom - r);
+    ctx.quadraticCurveTo(right, bottom, right - r, bottom);
+    ctx.lineTo(left + r, bottom);
+    ctx.quadraticCurveTo(left, bottom, left, bottom - r);
+    ctx.lineTo(left, top + r);
+    ctx.quadraticCurveTo(left, top, left + r, top);
+    ctx.closePath();
+  }
+
+  function nodeBounds(nodeId) {
+    try {
+      var bounds = network.getBoundingBox(nodeId);
+      if (
+        !bounds
+        || !Number.isFinite(bounds.left)
+        || !Number.isFinite(bounds.top)
+        || !Number.isFinite(bounds.right)
+        || !Number.isFinite(bounds.bottom)
+      ) return null;
+      return bounds;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function frameBounds(frame, scale) {
+    var bounds = null;
+    frame.members.forEach(function (nodeId) {
+      var node = nodeBounds(nodeId);
+      if (!node) return;
+      if (!bounds) {
+        bounds = {
+          left: node.left,
+          top: node.top,
+          right: node.right,
+          bottom: node.bottom
+        };
+        return;
+      }
+      bounds.left = Math.min(bounds.left, node.left);
+      bounds.top = Math.min(bounds.top, node.top);
+      bounds.right = Math.max(bounds.right, node.right);
+      bounds.bottom = Math.max(bounds.bottom, node.bottom);
+    });
+    if (!bounds) return null;
+    var padding = FRAME_PADDING / scale;
+    return {
+      left: bounds.left - padding,
+      top: bounds.top - padding,
+      right: bounds.right + padding,
+      bottom: bounds.bottom + padding
+    };
+  }
+
+  function drawFrames(ctx) {
+    if (!ctx || !FRAMES.length) return;
+    var scale = network.getScale();
+    if (!Number.isFinite(scale) || scale <= 0) scale = 1;
+
+    var selected = Object.create(null);
+    (network.getSelectedNodes ? network.getSelectedNodes() : []).forEach(
+      function (nodeId) { selected[String(nodeId)] = true; }
+    );
+
+    var drawn = [];
+    FRAMES.forEach(function (frame) {
+      var owner = network.body.data.nodes.get(frame.owner);
+      var bounds = frameBounds(frame, scale);
+      if (!owner || !bounds) return;
+      var active = !!window.mapContainmentLegendHighlight
+        || !!owner.mapFrameHighlighted
+        || frame.members.some(function (nodeId) {
+          return selected[String(nodeId)] || String(nodeId) === hoveredNode;
+        });
+      drawn.push({
+        frame: frame,
+        owner: owner,
+        bounds: bounds,
+        active: active
+      });
+    });
+
+    // Frames are ordered outermost first, so nested boundaries remain visible.
+    drawn.forEach(function (item) {
+      ctx.save();
+      drawRoundedRect(ctx, item.bounds, 8 / scale);
+      ctx.fillStyle = item.active
+        ? rgba(HIGHLIGHT_BACKGROUND, 0.12)
+        : rgba(item.owner.mapBaseColor, FRAME_FILL_ALPHA);
+      ctx.fill();
+      ctx.strokeStyle = item.active ? HIGHLIGHT_BORDER : FRAME_BORDER_COLOR;
+      ctx.lineWidth = (item.active
+        ? HIGHLIGHT_BORDER_WIDTH
+        : FRAME_STROKE_WIDTH) / scale;
+      ctx.setLineDash([]);
+      ctx.stroke();
+      ctx.restore();
+    });
+
+    // The owner is still a real graph node for links, hover details, and layout.
+    // Its transparent canvas node is painted here as the frame's single header.
+    drawn.forEach(function (item) {
+      var header = nodeBounds(item.frame.owner);
+      if (!header) return;
+      var owner = item.owner;
+      var label = String(owner.label || item.frame.owner);
+      ctx.save();
+      drawRoundedRect(ctx, header, 3 / scale);
+      ctx.fillStyle = item.active ? HIGHLIGHT_BACKGROUND : owner.mapBaseColor;
+      ctx.strokeStyle = item.active
+        ? HIGHLIGHT_BORDER
+        : FRAME_HEADER_BORDER_COLOR;
+      ctx.lineWidth = (item.active ? 2 : 1) / scale;
+      ctx.fill();
+      ctx.stroke();
+      ctx.font = "14px Arial, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#222222";
+      ctx.fillText(
+        label,
+        (header.left + header.right) / 2,
+        (header.top + header.bottom) / 2
+      );
+      ctx.restore();
+    });
+  }
+
+  network.on("beforeDrawing", drawFrames);
+  network.on("hoverNode", function (params) {
+    hoveredNode = String(params.node);
+    network.redraw();
+  });
+  network.on("blurNode", function (params) {
+    if (hoveredNode === String(params.node)) {
+      hoveredNode = null;
+      network.redraw();
+    }
+  });
 })();
 </script>
 """
@@ -971,6 +1157,10 @@ DATATYPE_REFERENCE_JS = """
     var value = activeLegendRow.getAttribute("data-legend-value");
 
     if (kind === "edge-type") {
+      if (value === "Contains") {
+        window.mapContainmentLegendHighlight = true;
+        return;
+      }
       network.body.data.edges.get().forEach(function (edge) {
         if (String(edge.mapType) === value) {
           activeEdges[String(edge.id)] = true;
@@ -979,6 +1169,7 @@ DATATYPE_REFERENCE_JS = """
       return;
     }
     if (kind === "references") {
+      window.mapContainmentLegendHighlight = true;
       Object.keys(DATATYPE_NODE_COLORS).forEach(function (nodeId) {
         activeDataTypes[nodeId] = true;
       });
@@ -1029,6 +1220,7 @@ DATATYPE_REFERENCE_JS = """
   }
 
   function updateHighlights() {
+    window.mapContainmentLegendHighlight = false;
     var activeNodes = Object.create(null);
     var activeDataTypes = Object.create(null);
     var activeEdges = Object.create(null);
@@ -1061,16 +1253,29 @@ DATATYPE_REFERENCE_JS = """
       var nodeId = String(node.id);
       var shouldHighlight = !!activeNodes[nodeId];
       if (shouldHighlight === !!activeNodeHighlights[nodeId]) return;
-      network.body.data.nodes.update({
-        id: node.id,
-        color: shouldHighlight
+      var update = { id: node.id };
+      if (node.mapContainer) {
+        var transparent = "rgba(0,0,0,0)";
+        update.color = {
+          background: transparent,
+          border: transparent,
+          highlight: { background: transparent, border: transparent },
+          hover: { background: transparent, border: transparent }
+        };
+        update.borderWidth = 0;
+        update.borderWidthSelected = 0;
+        update.mapFrameHighlighted = shouldHighlight;
+      } else {
+        update.color = shouldHighlight
           ? { background: HIGHLIGHT_BACKGROUND, border: HIGHLIGHT_BORDER }
-          : node.mapBaseColor,
-        borderWidth: shouldHighlight ? HIGHLIGHT_BORDER_WIDTH : 1
-      });
+          : node.mapBaseColor;
+        update.borderWidth = shouldHighlight ? HIGHLIGHT_BORDER_WIDTH : 1;
+      }
+      network.body.data.nodes.update(update);
       activeNodeHighlights[nodeId] = shouldHighlight;
     });
     updateEdgeHighlights(activeEdges);
+    network.redraw();
   }
 
   network.on("hoverNode", function (params) {
@@ -1219,7 +1424,40 @@ def seed_nodes_in_columns(net, datatype_node_colors):
             })
 
 
+def build_containment_frames(entities):
+    """Return owner nodes and their transitive descendants, outermost first."""
+    children = {}
+    for entity in entities:
+        parent = entity["parent"]
+        if parent:
+            children.setdefault(parent, []).append(entity["name"])
+
+    frames = []
+    for entity in entities:
+        owner = entity["name"]
+        direct_children = children.get(owner, [])
+        if not direct_children:
+            continue
+
+        descendants = []
+        visited = {owner}
+        pending = list(reversed(direct_children))
+        while pending:
+            child = pending.pop()
+            if child in visited:
+                continue
+            visited.add(child)
+            descendants.append(child)
+            pending.extend(reversed(children.get(child, [])))
+        frames.append({"owner": owner, "members": [owner] + descendants})
+
+    frames.sort(key=lambda frame: len(frame["members"]), reverse=True)
+    return frames
+
+
 def build_graph(entities, datatypes, relationships, tier_colors):
+    containment_frames = build_containment_frames(entities)
+    container_owners = {frame["owner"] for frame in containment_frames}
     net = Network(
         directed=True,
         height="750px",
@@ -1231,20 +1469,41 @@ def build_graph(entities, datatypes, relationships, tier_colors):
     known_nodes = set()
     descriptions = {}
 
-    def add_node(name, node_type, fields):
+    def add_node(name, node_type, fields, container=False):
         style = node_style(node_type, fields, tier_colors)
         known_nodes.add(name)
         node_types[node_type] = style
         descriptions[name] = node_title(name, node_type, fields)
-        net.add_node(
-            name,
-            label=name,
-            shape=style["shape"],
-            color=style["color"],
-            mapType=node_type,
-            mapImportance=fields.get("Importance", ""),
-            mapBaseColor=style["color"],
-        )
+        options = {
+            "label": name,
+            "shape": style["shape"],
+            "color": style["color"],
+            "mapType": node_type,
+            "mapImportance": fields.get("Importance", ""),
+            "mapBaseColor": style["color"],
+            "mapContainer": container,
+            "mapFrameHighlighted": False,
+        }
+        if container:
+            transparent = "rgba(0,0,0,0)"
+            options.update({
+                "color": {
+                    "background": transparent,
+                    "border": transparent,
+                    "highlight": {
+                        "background": transparent,
+                        "border": transparent,
+                    },
+                    "hover": {
+                        "background": transparent,
+                        "border": transparent,
+                    },
+                },
+                "font": {"color": transparent},
+                "borderWidth": 0,
+                "borderWidthSelected": 0,
+            })
+        net.add_node(name, **options)
         return style
 
     def ensure_node(name):
@@ -1270,6 +1529,15 @@ def build_graph(entities, datatypes, relationships, tier_colors):
             "title": edge_title(source, target, edge_type, fields or {}),
             "mapType": edge_type,
         }
+        if edge_type == "Contains":
+            # Keep containment springs in the force layout without drawing or
+            # exposing them as selectable edge objects.
+            options.update({
+                "hidden": True,
+                "physics": True,
+                "arrows": "",
+                "title": "",
+            })
         if label:
             options["label"] = label
         if datatype_refs:
@@ -1277,7 +1545,12 @@ def build_graph(entities, datatypes, relationships, tier_colors):
         net.add_edge(source, target, **options)
 
     for e in entities:
-        add_node(e["name"], e["type"], e["fields"])
+        add_node(
+            e["name"],
+            e["type"],
+            e["fields"],
+            container=e["name"] in container_owners,
+        )
 
     for e in entities:
         if e["parent"]:
@@ -1316,7 +1589,14 @@ def build_graph(entities, datatypes, relationships, tier_colors):
         )
 
     seed_nodes_in_columns(net, datatype_node_colors)
-    return net, node_types, edge_types, descriptions, datatype_node_colors
+    return (
+        net,
+        node_types,
+        edge_types,
+        descriptions,
+        datatype_node_colors,
+        containment_frames,
+    )
 
 
 def node_swatch(shape, fill, border="#444444", border_width=1):
@@ -1348,6 +1628,17 @@ def edge_swatch(color, dashes, width=3):
         'viewBox="0 0 42 18"><line x1="2" y1="9" x2="40" y2="9" '
         'stroke="{}" stroke-width="{}"{} stroke-linecap="round"/></svg>'
     ).format(color, width, dash)
+
+
+def containment_swatch(color=CONTAINMENT_FRAME_BORDER_COLOR, width=2):
+    """Return a sample of the enclosure used for Contains relationships."""
+    color = html_escape(str(color), quote=True)
+    return (
+        '<svg aria-hidden="true" focusable="false" width="42" height="18" '
+        'viewBox="0 0 42 18"><rect x="3" y="2" width="36" height="14" '
+        'rx="3" fill="rgba(0,0,0,0.03)" stroke="{}" '
+        'stroke-width="{}"/></svg>'
+    ).format(color, width)
 
 
 def legend_row(sample, label, indent=0, target_kind=None, target_value=""):
@@ -1386,7 +1677,7 @@ def build_legend(
         if node_type == "Entity":
             parts.append(legend_row(
                 "",
-                "<b>Entity</b> — box; color by importance",
+                "<b>Entity</b> — box or owner frame; color by importance",
                 target_kind="node-type",
                 target_value="Entity",
             ))
@@ -1423,15 +1714,20 @@ def build_legend(
             target_value=node_type,
         ))
 
-    parts.append("<b>Edges</b><br>")
+    parts.append("<b>Relationships</b><br>")
     for edge_type, style in sorted(edge_types.items()):
-        label = "<b>{}</b> — {}, {}".format(
-            html_escape(edge_type),
-            html_escape(dashes_label(style["dashes"])),
-            html_escape(color_label(style["color"])),
-        )
+        if edge_type == "Contains":
+            label = "<b>Contains</b> — owner frame; color by importance"
+            sample = containment_swatch(CONTAINMENT_FRAME_BORDER_COLOR)
+        else:
+            label = "<b>{}</b> — {}, {}".format(
+                html_escape(edge_type),
+                html_escape(dashes_label(style["dashes"])),
+                html_escape(color_label(style["color"])),
+            )
+            sample = edge_swatch(style["color"], style["dashes"])
         parts.append(legend_row(
-            edge_swatch(style["color"], style["dashes"]),
+            sample,
             label,
             target_kind="edge-type",
             target_value=edge_type,
@@ -1450,10 +1746,14 @@ def build_legend(
             False,
             DATATYPE_REFERENCE_HIGHLIGHT_EDGE_WIDTH,
         )
+        + containment_swatch(
+            DATATYPE_REFERENCE_HIGHLIGHT_BORDER,
+            DATATYPE_REFERENCE_HIGHLIGHT_EDGE_WIDTH,
+        )
         + "</span>"
     )
     highlight_label = (
-        "<b>Reference highlight</b> — {} fill, {} border/solid line"
+        "<b>Reference/frame highlight</b> — {} fill, {} border/line/frame"
     ).format(
         html_escape(color_label(DATATYPE_REFERENCE_HIGHLIGHT_BACKGROUND)),
         html_escape(color_label(DATATYPE_REFERENCE_HIGHLIGHT_BORDER)),
@@ -1568,9 +1868,14 @@ def main():
     entity_tiers, tier_colors = order_importance_tiers(
         e["fields"].get("Importance") for e in entities
     )
-    net, node_types, edge_types, descriptions, datatype_node_colors = build_graph(
-        entities, datatypes, relationships, tier_colors
-    )
+    (
+        net,
+        node_types,
+        edge_types,
+        descriptions,
+        datatype_node_colors,
+        containment_frames,
+    ) = build_graph(entities, datatypes, relationships, tier_colors)
     saved_positions = load_saved_layout(layout_path)
     applied_positions = apply_saved_layout(net, saved_positions)
     if applied_positions:
@@ -1603,6 +1908,28 @@ def main():
     node_tooltip = NODE_TOOLTIP_JS.replace(
         "__NODE_DESCRIPTIONS__", descriptions_json
     )
+    containment_frames_json = json.dumps(containment_frames).replace(
+        "<", r"\u003c"
+    )
+    containment_frames_js = (
+        CONTAINMENT_FRAME_JS.replace(
+            "__CONTAINMENT_FRAMES__", containment_frames_json
+        )
+        .replace("__FRAME_PADDING__", str(CONTAINMENT_FRAME_PADDING))
+        .replace("__FRAME_FILL_ALPHA__", str(CONTAINMENT_FRAME_FILL_ALPHA))
+        .replace("__FRAME_STROKE_WIDTH__", str(CONTAINMENT_FRAME_STROKE_WIDTH))
+        .replace("__FRAME_BORDER_COLOR__", CONTAINMENT_FRAME_BORDER_COLOR)
+        .replace(
+            "__FRAME_HEADER_BORDER_COLOR__",
+            CONTAINMENT_FRAME_HEADER_BORDER_COLOR,
+        )
+        .replace("__HIGHLIGHT_BACKGROUND__", DATATYPE_REFERENCE_HIGHLIGHT_BACKGROUND)
+        .replace("__HIGHLIGHT_BORDER__", DATATYPE_REFERENCE_HIGHLIGHT_BORDER)
+        .replace(
+            "__HIGHLIGHT_BORDER_WIDTH__",
+            str(DATATYPE_REFERENCE_HIGHLIGHT_BORDER_WIDTH),
+        )
+    )
     datatype_colors_json = json.dumps(datatype_node_colors).replace(
         "<", r"\u003c"
     )
@@ -1634,6 +1961,7 @@ def main():
         TOOLTIP_CSS,
         PHYSICS_DISABLE_JS,
         INTERACTION_JS,
+        containment_frames_js,
         node_tooltip,
         datatype_reference,
         layout_save_js,

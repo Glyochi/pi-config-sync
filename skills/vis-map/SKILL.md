@@ -17,9 +17,10 @@ uses only the requested input file; if `map/MAP.md` is missing, ask the user to
 run `/map` to create it rather than looking for another input file.
 
 The generated HTML inlines Pyvis resources, so it renders without a sibling
-`lib/` directory. The legend pairs descriptions with matching node-shape and
-edge-line swatches; Entity importance colors each get an indented row. Hovering
-or focusing a legend row highlights its matching nodes or edges in the graph.
+`lib/` directory. The legend pairs descriptions with matching node, relationship,
+and owner-frame swatches; Entity importance colors each get an indented row.
+Hovering or focusing a legend row highlights its matching nodes, edges, or
+containment frames in the graph.
 
 Node positions are presentation state, separate from the semantic content in
 `map/MAP.md`; the sidecar preserves hand-arranged nodes when `/vis-map`
@@ -27,9 +28,9 @@ regenerates its HTML. The **Save layout** button downloads a versioned
 `map-graph.layout.json` containing node coordinates only; place it at
 `map/map-graph.layout.json` beside the default HTML before regenerating. For a
 custom output path, the sidecar uses the same stem with `.layout.json`. Edge
-routes are recalculated from node positions. The Python script reads the
-sidecar during generation and embeds
-valid positions into the new HTML instead of having a local-file page fetch a
+routes and owner-frame bounds are recalculated from node positions; frames are
+not saved separately. The Python script reads the sidecar during generation and embeds valid
+positions into the new HTML instead of having a local-file page fetch a
 neighboring JSON file, which browsers commonly block. Positions match by node
 ID: missing or invalid entries use the normal layout, new nodes are laid out as
 usual, and stale IDs are ignored. The versioned schema can be extended without
@@ -42,13 +43,23 @@ when it exactly matches a node heading. Hovering or selecting an `Interact`
 edge highlights the referenced DataType node; hovering or selecting a DataType
 node highlights the `Interact` edges that reference it and any incident
 `Composed of` edges. If no matching node exists, the value remains a plain edge
-label; no node is invented and no warning is emitted. The initial
-layout seeds DataType nodes on the right and all other nodes on the left, then
-uses the existing force-directed clustering. The split is only a starting
-arrangement; after stabilization every node remains freely draggable in both
-directions. Parallel edges between the same nodes are routed into distinct
-curved lanes regardless of their line styles. Do not improvise colors, shapes,
-or labels per invocation:
+label; no node is invented and no warning is emitted.
+
+Nested entity headings render as owner frames enclosing the owner and its full
+descendant subtree. The owner remains a real graph node for layout, links, hover
+details, and selection; its importance-colored header is drawn within the frame.
+`Contains` edges are hidden from the canvas but remain physics-enabled springs,
+so the initial layout retains hierarchy clustering. Frames refit continuously
+after node moves; their members stay independently draggable, and moving a member
+far away expands its ancestor frames rather than constraining or moving the
+group. DataType nodes remain outside these entity frames.
+
+The initial layout seeds DataType nodes on the right and all other nodes on the
+left, then uses the existing force-directed clustering. The split is only a
+starting arrangement; after stabilization every node remains freely draggable
+in both directions. Parallel visible edges between the same nodes are routed
+into distinct curved lanes regardless of their line styles. Do not improvise
+colors, shapes, or labels per invocation:
 the script's style presets are the source of truth, and other
 `- **Type**: X` tags use deterministic fallback styles.
 
