@@ -1,22 +1,32 @@
 #!/usr/bin/env python3
-"""Render ARCHITECTURE.md as an interactive directed graph using Pyvis.
+"""Render map/MAP.md as an interactive directed graph using Pyvis.
 
-Reads the markdown produced by the `map` skill and writes an HTML graph. The
-format is self-describing via `- **Type**: X` tags, so this script renders any
+Reads the markdown produced by the `map` skill and writes a self-contained
+HTML graph with Pyvis resources inlined. A neighboring layout sidecar preserves
+node positions across HTML regeneration without changing `map/MAP.md`.
+The format is self-describing via
+`- **Type**: X` tags, so this script renders any
 node/edge type generically: known types get their fixed styling, unknown types
 get a deterministic fallback. Interact-edge DataType labels that exactly
 match existing DataType nodes highlight those nodes when the edge is hovered or
-selected; unmatched labels remain plain strings. All styling is hardcoded below
-so the output is identical regardless of which model invokes this script.
+selected; hovering a DataType node also highlights its associated edges.
+Unmatched labels remain plain strings. DataType nodes are seeded on the right
+and all other nodes on the left before force-directed clustering;
+after stabilization, every node remains freely draggable in both directions.
+All styling is hardcoded below so the output is identical regardless of which
+model invokes this script.
 
 Usage:
-    python3 visualize.py [ARCHITECTURE.md] [output.html]
+    python3 visualize.py [map/MAP.md] [map/map-graph.html]
 """
 
 import json
+import math
+import os
 import re
 import sys
 import zlib
+from html import escape as html_escape
 
 try:
     from pyvis.network import Network
@@ -85,9 +95,17 @@ NODE_FALLBACK_PALETTE = [
 ]
 
 DATATYPE_COLOR = "#A9CCEF"
+
+# Seed starting sides before force-directed clustering; do not lock nodes there.
+OTHER_NODE_COLUMN_X = -450
+DATATYPE_COLUMN_X = 450
+COLUMN_VERTICAL_SPACING = 120
+LAYOUT_VERSION = 1
+
 DATATYPE_REFERENCE_HIGHLIGHT_BACKGROUND = "#FFE08A"
 DATATYPE_REFERENCE_HIGHLIGHT_BORDER = "#E67700"
 DATATYPE_REFERENCE_HIGHLIGHT_BORDER_WIDTH = 4
+DATATYPE_REFERENCE_HIGHLIGHT_EDGE_WIDTH = 4
 
 # Unknown edge types keep saturated colors so the lines stay visible on white.
 EDGE_FALLBACK_PALETTE = [
@@ -118,7 +136,13 @@ EDGE_STYLE_PRESETS = {
 
 # Hex colors render correctly but read poorly in the legend, so they are mapped
 # to plain English names. The importance palette carries its own names.
-COLOR_NAMES = {"#2B7CE9": "blue", "#A020F0": "purple", DATATYPE_COLOR: "light blue"}
+COLOR_NAMES = {
+    "#2B7CE9": "blue",
+    "#A020F0": "purple",
+    DATATYPE_COLOR: "light blue",
+    DATATYPE_REFERENCE_HIGHLIGHT_BACKGROUND: "pale yellow",
+    DATATYPE_REFERENCE_HIGHLIGHT_BORDER: "orange",
+}
 COLOR_NAMES.update({color: name for name, color in IMPORTANCE_PALETTE})
 COLOR_NAMES.update({color: name for name, color in NODE_FALLBACK_PALETTE})
 
@@ -734,7 +758,7 @@ TOOLTIP_CSS = """
     white-space: pre-wrap !important;
     overflow-wrap: anywhere !important;
   }
-  div.architecture-node-tooltip {
+  div.map-node-tooltip {
     position: absolute;
     display: none;
     z-index: 2000;
@@ -765,7 +789,7 @@ NODE_TOOLTIP_JS = """
   if (!container) return;
 
   var tooltip = document.createElement("div");
-  tooltip.className = "architecture-node-tooltip";
+  tooltip.className = "map-node-tooltip";
   tooltip.setAttribute("role", "tooltip");
   tooltip.setAttribute("aria-hidden", "true");
   container.appendChild(tooltip);
@@ -905,8 +929,21 @@ DATATYPE_REFERENCE_JS = """
   var HIGHLIGHT_BACKGROUND = "__HIGHLIGHT_BACKGROUND__";
   var HIGHLIGHT_BORDER = "__HIGHLIGHT_BORDER__";
   var HIGHLIGHT_BORDER_WIDTH = __HIGHLIGHT_BORDER_WIDTH__;
+  var HIGHLIGHT_EDGE_WIDTH = __HIGHLIGHT_EDGE_WIDTH__;
   var hoveredEdge = null;
-  var activeHighlights = Object.create(null);
+  var hoveredDataType = null;
+  var hoveredLegendRow = null;
+  var focusedLegendRow = null;
+  var activeLegendRow = null;
+  var activeNodeHighlights = Object.create(null);
+  var activeEdgeHighlights = Object.create(null);
+  var originalEdgeStyles = Object.create(null);
+
+  function isDataTypeNode(nodeId) {
+    return Object.prototype.hasOwnProperty.call(
+      DATATYPE_NODE_COLORS, String(nodeId)
+    );
+  }
 
   function addEdgeReferences(active, edgeId) {
     var edge = network.body.data.edges.get(edgeId);
@@ -916,30 +953,134 @@ DATATYPE_REFERENCE_JS = """
     });
   }
 
-  function updateHighlights() {
-    var active = Object.create(null);
-    var selectedEdges = network.getSelectedEdges
-      ? network.getSelectedEdges()
-      : [];
-    selectedEdges.forEach(function (edgeId) {
-      addEdgeReferences(active, edgeId);
-    });
-    if (hoveredEdge !== null) addEdgeReferences(active, hoveredEdge);
-
-    Object.keys(DATATYPE_NODE_COLORS).forEach(function (nodeId) {
-      var shouldHighlight = !!active[nodeId];
-      if (shouldHighlight === !!activeHighlights[nodeId]) return;
-      network.body.data.nodes.update({
-        id: nodeId,
-        color: shouldHighlight
-          ? { background: HIGHLIGHT_BACKGROUND, border: HIGHLIGHT_BORDER }
-          : DATATYPE_NODE_COLORS[nodeId],
-        borderWidth: shouldHighlight ? HIGHLIGHT_BORDER_WIDTH : 1
-      });
-      activeHighlights[nodeId] = shouldHighlight;
+  function addDataTypeEdges(active, nodeId) {
+    var key = String(nodeId);
+    network.body.data.edges.get().forEach(function (edge) {
+      var referencesNode = Array.isArray(edge.dataTypeRefs)
+        && edge.dataTypeRefs.some(function (reference) {
+          return String(reference) === key;
+        });
+      var touchesNode = String(edge.from) === key || String(edge.to) === key;
+      if (referencesNode || touchesNode) active[String(edge.id)] = true;
     });
   }
 
+  function addLegendTargets(activeNodes, activeDataTypes, activeEdges) {
+    if (!activeLegendRow) return;
+    var kind = activeLegendRow.getAttribute("data-legend-kind");
+    var value = activeLegendRow.getAttribute("data-legend-value");
+
+    if (kind === "edge-type") {
+      network.body.data.edges.get().forEach(function (edge) {
+        if (String(edge.mapType) === value) {
+          activeEdges[String(edge.id)] = true;
+        }
+      });
+      return;
+    }
+    if (kind === "references") {
+      Object.keys(DATATYPE_NODE_COLORS).forEach(function (nodeId) {
+        activeDataTypes[nodeId] = true;
+      });
+      return;
+    }
+
+    network.body.data.nodes.get().forEach(function (node) {
+      var matches = false;
+      if (kind === "node-type") {
+        matches = String(node.mapType) === value;
+      } else if (kind === "importance") {
+        matches = node.mapType === "Entity"
+          && String(node.mapImportance) === value;
+      } else if (kind === "unrated-entity") {
+        matches = node.mapType === "Entity"
+          && !node.mapImportance;
+      }
+      if (!matches) return;
+      var nodeId = String(node.id);
+      activeNodes[nodeId] = true;
+      if (isDataTypeNode(nodeId)) activeDataTypes[nodeId] = true;
+    });
+  }
+
+  function updateEdgeHighlights(active) {
+    network.body.data.edges.get().forEach(function (edge) {
+      var edgeId = String(edge.id);
+      var shouldHighlight = !!active[edgeId];
+      if (shouldHighlight === !!activeEdgeHighlights[edgeId]) return;
+
+      var update = { id: edge.id };
+      if (shouldHighlight) {
+        originalEdgeStyles[edgeId] = {
+          color: edge.color,
+          width: edge.width
+        };
+        update.color = HIGHLIGHT_BORDER;
+        update.width = HIGHLIGHT_EDGE_WIDTH;
+      } else {
+        var original = originalEdgeStyles[edgeId] || {};
+        update.color = original.color;
+        update.width = original.width === undefined ? 1 : original.width;
+        delete originalEdgeStyles[edgeId];
+      }
+      network.body.data.edges.update(update);
+      activeEdgeHighlights[edgeId] = shouldHighlight;
+    });
+  }
+
+  function updateHighlights() {
+    var activeNodes = Object.create(null);
+    var activeDataTypes = Object.create(null);
+    var activeEdges = Object.create(null);
+    var selectedEdges = network.getSelectedEdges
+      ? network.getSelectedEdges()
+      : [];
+    var selectedNodes = network.getSelectedNodes
+      ? network.getSelectedNodes()
+      : [];
+
+    selectedEdges.forEach(function (edgeId) {
+      addEdgeReferences(activeNodes, edgeId);
+    });
+    if (hoveredEdge !== null) addEdgeReferences(activeNodes, hoveredEdge);
+
+    selectedNodes.forEach(function (nodeId) {
+      if (isDataTypeNode(nodeId)) activeDataTypes[String(nodeId)] = true;
+    });
+    if (hoveredDataType !== null) {
+      activeDataTypes[String(hoveredDataType)] = true;
+    }
+    addLegendTargets(activeNodes, activeDataTypes, activeEdges);
+
+    Object.keys(activeDataTypes).forEach(function (nodeId) {
+      activeNodes[nodeId] = true;
+      addDataTypeEdges(activeEdges, nodeId);
+    });
+
+    network.body.data.nodes.get().forEach(function (node) {
+      var nodeId = String(node.id);
+      var shouldHighlight = !!activeNodes[nodeId];
+      if (shouldHighlight === !!activeNodeHighlights[nodeId]) return;
+      network.body.data.nodes.update({
+        id: node.id,
+        color: shouldHighlight
+          ? { background: HIGHLIGHT_BACKGROUND, border: HIGHLIGHT_BORDER }
+          : node.mapBaseColor,
+        borderWidth: shouldHighlight ? HIGHLIGHT_BORDER_WIDTH : 1
+      });
+      activeNodeHighlights[nodeId] = shouldHighlight;
+    });
+    updateEdgeHighlights(activeEdges);
+  }
+
+  network.on("hoverNode", function (params) {
+    hoveredDataType = isDataTypeNode(params.node) ? params.node : null;
+    updateHighlights();
+  });
+  network.on("blurNode", function (params) {
+    if (String(hoveredDataType) === String(params.node)) hoveredDataType = null;
+    updateHighlights();
+  });
   network.on("hoverEdge", function (params) {
     hoveredEdge = params.edge;
     updateHighlights();
@@ -953,6 +1094,105 @@ DATATYPE_REFERENCE_JS = """
       network.on(eventName, updateHighlights);
     }
   );
+
+  var legend = document.querySelector(".map-legend");
+  if (legend) {
+    function legendRowFromEvent(event) {
+      if (!event.target || !event.target.closest) return null;
+      var row = event.target.closest("[data-legend-kind]");
+      return row && legend.contains(row) ? row : null;
+    }
+
+    function refreshLegendTarget() {
+      var next = hoveredLegendRow || focusedLegendRow;
+      if (next === activeLegendRow) return;
+      if (activeLegendRow) activeLegendRow.style.backgroundColor = "";
+      activeLegendRow = next;
+      if (activeLegendRow) {
+        activeLegendRow.style.backgroundColor = "rgba(230,119,0,0.12)";
+      }
+      updateHighlights();
+    }
+
+    legend.addEventListener("mouseover", function (event) {
+      var row = legendRowFromEvent(event);
+      if (row) {
+        hoveredLegendRow = row;
+        refreshLegendTarget();
+      }
+    });
+    legend.addEventListener("mouseout", function (event) {
+      var row = legendRowFromEvent(event);
+      if (row && row === hoveredLegendRow && !row.contains(event.relatedTarget)) {
+        hoveredLegendRow = null;
+        refreshLegendTarget();
+      }
+    });
+    legend.addEventListener("focusin", function (event) {
+      focusedLegendRow = legendRowFromEvent(event);
+      refreshLegendTarget();
+    });
+    legend.addEventListener("focusout", function (event) {
+      var row = legendRowFromEvent(event);
+      if (row && row === focusedLegendRow && !row.contains(event.relatedTarget)) {
+        focusedLegendRow = null;
+        refreshLegendTarget();
+      }
+    });
+  }
+})();
+</script>
+"""
+
+LAYOUT_SAVE_UI = (
+    '<div style="position:fixed;top:10px;right:10px;z-index:1100;'
+    'max-width:320px;padding:8px;background:rgba(255,255,255,0.95);'
+    'border:1px solid #ccc;font:12px/1.4 sans-serif;">'
+    '<button id="save-layout-button" type="button">Save layout</button>'
+    '<div id="layout-save-status" aria-live="polite"></div>'
+    '</div>'
+)
+
+LAYOUT_SAVE_JS = """
+<script type="text/javascript">
+(function () {
+  var FILENAME = __LAYOUT_FILENAME__;
+  var VERSION = __LAYOUT_VERSION__;
+  var button = document.getElementById("save-layout-button");
+  if (!button) return;
+
+  button.addEventListener("click", function () {
+    var positions = network.getPositions();
+    var nodes = Object.create(null);
+    Object.keys(positions).forEach(function (id) {
+      var position = positions[id];
+      if (
+        !position
+        || !Number.isFinite(position.x)
+        || !Number.isFinite(position.y)
+      ) return;
+      nodes[id] = { x: position.x, y: position.y };
+    });
+
+    var layout = { version: VERSION, nodes: nodes };
+    var blob = new Blob([JSON.stringify(layout, null, 2)], {
+      type: "application/json"
+    });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement("a");
+    link.href = url;
+    link.download = FILENAME;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+
+    var status = document.getElementById("layout-save-status");
+    if (status) {
+      status.textContent = "Downloaded " + FILENAME
+        + ". Place it beside this HTML to restore positions on regeneration.";
+    }
+  });
 })();
 </script>
 """
@@ -962,8 +1202,30 @@ DATATYPE_REFERENCE_JS = """
 # Graph construction
 # ---------------------------------------------------------------------------
 
+def seed_nodes_in_columns(net, datatype_node_colors):
+    """Seed two starting sides while leaving physics and manual movement enabled."""
+    columns = {False: [], True: []}
+    datatype_ids = set(datatype_node_colors)
+    for node in net.nodes:
+        columns[node["id"] in datatype_ids].append(node)
+
+    for is_datatype, nodes in columns.items():
+        x = DATATYPE_COLUMN_X if is_datatype else OTHER_NODE_COLUMN_X
+        midpoint = (len(nodes) - 1) / 2
+        for index, node in enumerate(nodes):
+            node.update({
+                "x": x,
+                "y": (index - midpoint) * COLUMN_VERTICAL_SPACING,
+            })
+
+
 def build_graph(entities, datatypes, relationships, tier_colors):
-    net = Network(directed=True, height="750px", width="100%")
+    net = Network(
+        directed=True,
+        height="750px",
+        width="100%",
+        cdn_resources="in_line",
+    )
     node_types = {}
     edge_types = {}
     known_nodes = set()
@@ -979,6 +1241,9 @@ def build_graph(entities, datatypes, relationships, tier_colors):
             label=name,
             shape=style["shape"],
             color=style["color"],
+            mapType=node_type,
+            mapImportance=fields.get("Importance", ""),
+            mapBaseColor=style["color"],
         )
         return style
 
@@ -1003,6 +1268,7 @@ def build_graph(entities, datatypes, relationships, tier_colors):
             "dashes": style["dashes"],
             "arrows": "to,from" if bidirectional else "to",
             "title": edge_title(source, target, edge_type, fields or {}),
+            "mapType": edge_type,
         }
         if label:
             options["label"] = label
@@ -1049,58 +1315,240 @@ def build_graph(entities, datatypes, relationships, tier_colors):
             datatype_refs=datatype_refs,
         )
 
+    seed_nodes_in_columns(net, datatype_node_colors)
     return net, node_types, edge_types, descriptions, datatype_node_colors
 
 
-def build_legend(node_types, edge_types, entity_tiers, tier_colors):
-    parts = [
-        '<div style="position: fixed; top: 10px; left: 10px; background: rgba(255,255,255,0.95);'
-        ' border: 1px solid #ccc; padding: 10px; z-index: 1000; font-family: sans-serif;'
-        ' font-size: 12px; max-height: 80vh; overflow: auto;">',
-        "<b>Legend</b><br>",
-        "<b>Nodes</b><br>",
-    ]
-    for t, s in sorted(node_types.items()):
-        if t == "Entity":
-            tiers = ", ".join(
-                "{}={}".format(
-                    tier, color_label(entity_color(tier, tier_colors))
-                )
-                for tier in entity_tiers
-            )
-            detail = "box, color by importance: " + tiers if tiers else "box"
-            parts.append("Entity ({})<br>".format(detail))
-        else:
-            parts.append(
-                "{} ({} {})<br>".format(t, s["shape"], color_label(s["color"]))
-            )
-    parts.append("<b>Edges</b><br>")
-    for t, s in sorted(edge_types.items()):
-        parts.append(
-            "{} ({} {})<br>".format(
-                t, dashes_label(s["dashes"]), color_label(s["color"])
-            )
-        )
-    parts.append(
-        (
-            '<b>Reference highlight</b><br>'
-            '<span style="display:inline-block;width:10px;height:10px;'
-            'background:{background};border:{border_width}px solid {border};'
-            'vertical-align:middle;"></span> '
-            'DataType node highlighted on Interact edge hover/selection<br>'
+def node_swatch(shape, fill, border="#444444", border_width=1):
+    """Return a small SVG sample matching a graph node's shape and color."""
+    fill = html_escape(str(fill), quote=True)
+    border = html_escape(str(border), quote=True)
+    if shape == "box":
+        mark = '<rect x="2" y="2" width="28" height="14" rx="2"'
+    elif shape == "diamond":
+        mark = '<polygon points="16,1 30,9 16,17 2,9"'
+    else:
+        mark = '<ellipse cx="16" cy="9" rx="14" ry="7"'
+    return (
+        '<svg aria-hidden="true" focusable="false" width="32" height="18" '
+        'viewBox="0 0 32 18">{} fill="{}" stroke="{}" '
+        'stroke-width="{}"/></svg>'
+    ).format(mark, fill, border, border_width)
+
+
+def edge_swatch(color, dashes, width=3):
+    """Return a line sample whose color and dash pattern match an edge style."""
+    color = html_escape(str(color), quote=True)
+    dash = ""
+    if dashes:
+        pattern = " ".join(str(length) for length in dashes)
+        dash = ' stroke-dasharray="{}"'.format(html_escape(pattern, quote=True))
+    return (
+        '<svg aria-hidden="true" focusable="false" width="42" height="18" '
+        'viewBox="0 0 42 18"><line x1="2" y1="9" x2="40" y2="9" '
+        'stroke="{}" stroke-width="{}"{} stroke-linecap="round"/></svg>'
+    ).format(color, width, dash)
+
+
+def legend_row(sample, label, indent=0, target_kind=None, target_value=""):
+    """Render a legend item and optionally mark its graph elements as targets."""
+    gap = 8 if sample else 0
+    attrs = ""
+    cursor = ""
+    if target_kind:
+        attrs = (
+            ' class="map-legend-row" data-legend-kind="{}" '
+            'data-legend-value="{}" tabindex="0" role="button"'
         ).format(
-            background=DATATYPE_REFERENCE_HIGHLIGHT_BACKGROUND,
-            border=DATATYPE_REFERENCE_HIGHLIGHT_BORDER,
-            border_width=DATATYPE_REFERENCE_HIGHLIGHT_BORDER_WIDTH,
+            html_escape(target_kind, quote=True),
+            html_escape(target_value, quote=True),
         )
+        cursor = "cursor:pointer;"
+    return (
+        '<div{} style="display:flex;align-items:center;gap:{}px;min-height:22px;'
+        'margin-left:{}px;{}">{}<span>{}</span></div>'
+    ).format(attrs, gap, indent, cursor, sample, label)
+
+
+def build_legend(
+    node_types, edge_types, entity_tiers, tier_colors, has_unrated_entities=False
+):
+    parts = [
+        '<div class="map-legend" '
+        'style="position:fixed;top:10px;left:10px;box-sizing:border-box;'
+        'max-width:min(380px,calc(100vw - 20px));max-height:80vh;overflow:auto;'
+        'padding:10px;background:rgba(255,255,255,0.95);border:1px solid #ccc;'
+        'z-index:1000;font:12px/1.45 sans-serif;">',
+        "<b>Legend</b><br><b>Nodes</b><br>",
+    ]
+
+    for node_type, style in sorted(node_types.items()):
+        if node_type == "Entity":
+            parts.append(legend_row(
+                "",
+                "<b>Entity</b> — box; color by importance",
+                target_kind="node-type",
+                target_value="Entity",
+            ))
+            entity_colors = [
+                (tier, entity_color(tier, tier_colors), "importance")
+                for tier in entity_tiers
+            ]
+            if has_unrated_entities or not entity_colors:
+                entity_colors.append((
+                    "No importance", ENTITY_DEFAULT_COLOR, "unrated-entity"
+                ))
+            for tier, color, target_kind in entity_colors:
+                label = "{} — {}".format(
+                    html_escape(tier), html_escape(color_label(color))
+                )
+                parts.append(legend_row(
+                    node_swatch(ENTITY_SHAPE, color),
+                    label,
+                    indent=18,
+                    target_kind=target_kind,
+                    target_value="" if target_kind == "unrated-entity" else tier,
+                ))
+            continue
+
+        label = "<b>{}</b> — {}, {}".format(
+            html_escape(node_type),
+            html_escape(style["shape"]),
+            html_escape(color_label(style["color"])),
+        )
+        parts.append(legend_row(
+            node_swatch(style["shape"], style["color"]),
+            label,
+            target_kind="node-type",
+            target_value=node_type,
+        ))
+
+    parts.append("<b>Edges</b><br>")
+    for edge_type, style in sorted(edge_types.items()):
+        label = "<b>{}</b> — {}, {}".format(
+            html_escape(edge_type),
+            html_escape(dashes_label(style["dashes"])),
+            html_escape(color_label(style["color"])),
+        )
+        parts.append(legend_row(
+            edge_swatch(style["color"], style["dashes"]),
+            label,
+            target_kind="edge-type",
+            target_value=edge_type,
+        ))
+
+    highlight_sample = (
+        '<span style="display:inline-flex;align-items:center;gap:4px;">'
+        + node_swatch(
+            DATATYPE_SHAPE,
+            DATATYPE_REFERENCE_HIGHLIGHT_BACKGROUND,
+            DATATYPE_REFERENCE_HIGHLIGHT_BORDER,
+            DATATYPE_REFERENCE_HIGHLIGHT_BORDER_WIDTH,
+        )
+        + edge_swatch(
+            DATATYPE_REFERENCE_HIGHLIGHT_BORDER,
+            False,
+            DATATYPE_REFERENCE_HIGHLIGHT_EDGE_WIDTH,
+        )
+        + "</span>"
     )
+    highlight_label = (
+        "<b>Reference highlight</b> — {} fill, {} border/solid line"
+    ).format(
+        html_escape(color_label(DATATYPE_REFERENCE_HIGHLIGHT_BACKGROUND)),
+        html_escape(color_label(DATATYPE_REFERENCE_HIGHLIGHT_BORDER)),
+    )
+    parts.append(legend_row(
+        highlight_sample,
+        highlight_label,
+        target_kind="references",
+        target_value="all",
+    ))
     parts.append("</div>")
     return "".join(parts)
 
 
+def default_input_path(requested_path=None):
+    """Use the requested input or the canonical map file, with no legacy fallback."""
+    return requested_path or "map/MAP.md"
+
+
+def layout_path_for_output(output_path):
+    stem, _ = os.path.splitext(output_path)
+    return stem + ".layout.json"
+
+
+def finite_coordinate(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def load_saved_layout(layout_path):
+    try:
+        with open(layout_path, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        print(
+            "Warning: ignoring saved layout {}: {}".format(layout_path, error),
+            file=sys.stderr,
+        )
+        return {}
+
+    if (
+        not isinstance(saved, dict)
+        or type(saved.get("version")) is not int
+        or saved["version"] != LAYOUT_VERSION
+        or not isinstance(saved.get("nodes"), dict)
+    ):
+        print(
+            "Warning: ignoring unsupported or invalid layout file {}.".format(
+                layout_path
+            ),
+            file=sys.stderr,
+        )
+        return {}
+
+    positions = {}
+    for node_id, coordinates in saved["nodes"].items():
+        if not isinstance(node_id, str) or not isinstance(coordinates, dict):
+            continue
+        x = finite_coordinate(coordinates.get("x"))
+        y = finite_coordinate(coordinates.get("y"))
+        if x is not None and y is not None:
+            positions[node_id] = {"x": x, "y": y}
+    return positions
+
+
+def apply_saved_layout(net, positions):
+    """Apply matching saved coordinates while leaving new nodes in force layout."""
+    applied = 0
+    for node in net.nodes:
+        position = positions.get(str(node["id"]))
+        if position is None:
+            continue
+        node.update({
+            "x": position["x"],
+            "y": position["y"],
+            "physics": False,
+        })
+        applied += 1
+    return applied
+
+
 def main():
-    input_path = sys.argv[1] if len(sys.argv) > 1 else "ARCHITECTURE.md"
-    output_path = sys.argv[2] if len(sys.argv) > 2 else "architecture-graph.html"
+    requested_input = sys.argv[1] if len(sys.argv) > 1 else None
+    input_path = default_input_path(requested_input)
+    output_path = (
+        sys.argv[2] if len(sys.argv) > 2 else "map/map-graph.html"
+    )
+    layout_path = layout_path_for_output(output_path)
 
     try:
         with open(input_path, "r", encoding="utf-8") as f:
@@ -1123,12 +1571,33 @@ def main():
     net, node_types, edge_types, descriptions, datatype_node_colors = build_graph(
         entities, datatypes, relationships, tier_colors
     )
+    saved_positions = load_saved_layout(layout_path)
+    applied_positions = apply_saved_layout(net, saved_positions)
+    if applied_positions:
+        print(
+            "Loaded saved positions for {} of {} nodes from {}.".format(
+                applied_positions, len(net.nodes), layout_path
+            )
+        )
+
+    output_directory = os.path.dirname(output_path)
+    if output_directory:
+        os.makedirs(output_directory, exist_ok=True)
     net.set_options(json.dumps(OPTIONS))
     net.write_html(output_path, open_browser=False)
 
     with open(output_path, "r", encoding="utf-8") as f:
         html = f.read()
-    legend = build_legend(node_types, edge_types, entity_tiers, tier_colors)
+    has_unrated_entities = any(
+        not e["fields"].get("Importance") for e in entities
+    )
+    legend = build_legend(
+        node_types,
+        edge_types,
+        entity_tiers,
+        tier_colors,
+        has_unrated_entities,
+    )
     # Prevent map content from closing the injected script element.
     descriptions_json = json.dumps(descriptions).replace("<", r"\u003c")
     node_tooltip = NODE_TOOLTIP_JS.replace(
@@ -1147,14 +1616,27 @@ def main():
             "__HIGHLIGHT_BORDER_WIDTH__",
             str(DATATYPE_REFERENCE_HIGHLIGHT_BORDER_WIDTH),
         )
+        .replace(
+            "__HIGHLIGHT_EDGE_WIDTH__",
+            str(DATATYPE_REFERENCE_HIGHLIGHT_EDGE_WIDTH),
+        )
+    )
+    layout_filename_json = json.dumps(os.path.basename(layout_path)).replace(
+        "<", r"\u003c"
+    )
+    layout_save_js = (
+        LAYOUT_SAVE_JS.replace("__LAYOUT_FILENAME__", layout_filename_json)
+        .replace("__LAYOUT_VERSION__", str(LAYOUT_VERSION))
     )
     additions = [
         legend,
+        LAYOUT_SAVE_UI,
         TOOLTIP_CSS,
         PHYSICS_DISABLE_JS,
         INTERACTION_JS,
         node_tooltip,
         datatype_reference,
+        layout_save_js,
         "</body>",
     ]
     html = html.replace("</body>", "\n".join(additions))
