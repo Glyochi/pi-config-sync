@@ -1,6 +1,6 @@
 {
   "defaultProvider": "opencode",
-  "defaultModel": "kimi-k2.6",
+  "defaultModel": "gpt-6-luna",
   "packages": [
     "npm:pi-config-sync@0.3.0",
     "npm:pi-toggle-skills@0.1.20",
@@ -17,7 +17,7 @@
   "hideThinkingBlock": true,
   "enabledModels": [
     "opencode/deepseek-v4.1-flash",
-    "opencode/deepseek-v4-pro"
+    "opencode/gpt-6-luna"
   ],
   "showCacheMissNotices": true
 }
