@@ -36,12 +36,11 @@ fi
 printf '%s\n' '{"jev":{"enabled":true},"yolo":false}' >"$TMP_DIR/jev-on.jsonc"
 printf '%s\n' '{"jev":{"enabled":false},"yolo":true}' >"$TMP_DIR/yolo-on.jsonc"
 
-# A session that already carries the pi-plan-build state entry, because the `--plan`
-# flag does not persist one in print mode. This is the only reliable way to drive
-# Plan mode headlessly, and it exercises the real mode-detection path.
+# A session that already carries the independent learning-modes state entry, so the
+# permission extension exercises the same persisted mode contract as TUI/RPC sessions.
 cat >"$TMP_DIR/plan-session.jsonl" <<'JSON'
 {"type":"session","version":3,"id":"01a1146a-0000-7000-8000-0000000000aa","timestamp":"2026-10-07T14:00:00.000Z","cwd":"/workspace"}
-{"type":"custom","id":"p1","parentId":null,"timestamp":"2026-10-07T14:00:01.000Z","customType":"pi-plan-build-state","data":{"version":4,"selectedMode":"plan","planSessionId":"01a1146a-0000-7000-8000-0000000000aa","toolsBeforeModes":["read","bash","edit","write","grep","find","ls"],"collection":{"attached":null,"counter":0,"records":[]}}}
+{"type":"custom","id":"p1","parentId":null,"timestamp":"2026-10-07T14:00:01.000Z","customType":"learning-modes-state","data":{"version":1,"mode":"plan"}}
 JSON
 
 # Print the text of every tool result in a `pi --mode json` transcript.

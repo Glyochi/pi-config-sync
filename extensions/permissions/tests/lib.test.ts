@@ -51,10 +51,11 @@ import {
 	permissionArgumentCompletion,
 	permissionCompletions,
 	permissionIndicator,
+	permissionProfile,
 	permissionsUsage,
 	recordClassification,
 	modeFromEntryData,
-	PLAN_BUILD_STATE_TYPE,
+	LEARNING_MODES_STATE_TYPE,
 	normalizePath,
 	resolveTarget,
 	resolveDeterministic,
@@ -784,6 +785,9 @@ eq("a glob wipe still reaches the classifier", decideShell("rm -rf /workspace/*"
 eq("a delete outside the working directories still reaches it", decideShell("rm -rf /srv/data", on).kind, "classify");
 eq("a delete of the working directory still reaches it", decideShell("rm -rf /workspace", on).kind, "classify");
 eq("a delete in /tmp is allowed with jev off too", decideShell("rm /tmp/a.txt", off).kind, "allow");
+eq("Ask mode allows a Build-level local delete", decideShell("rm /tmp/a.txt", off, "ask").kind, "allow");
+eq("Ask mode keeps Build-level external-effect asks", decideShell("git push origin main", off, "ask").kind, "ask");
+eq("Ask mode keeps Build-level catastrophe blocks", decideShell("rm -rf /usr/share/x", off, "ask").kind, "block");
 eq("plan mode still refuses a delete", decideShell("rm /tmp/a.txt", off, "plan").kind, "block");
 
 eq("normalizePath resolves a parent", normalizePath("/workspace/../x"), "/x");
@@ -857,18 +861,23 @@ eq("a benign non-destructive command is still free", decideShell("npm test", on)
 eq("with jev off a destructive command is unchanged", decideShell("rm -rf /workspace/*", off).kind, "allow");
 
 // --- modes ---------------------------------------------------------------
-
-eq("newest mode entry wins", modeFromEntries([
-	{ customType: PLAN_BUILD_STATE_TYPE, data: { selectedMode: "plan" } },
-	{ customType: "other", data: { selectedMode: "plan" } },
-	{ customType: PLAN_BUILD_STATE_TYPE, data: { selectedMode: "build" } },
-]), "build");
+eq("newest learning-mode entry wins", modeFromEntries([
+	{ customType: LEARNING_MODES_STATE_TYPE, data: { version: 1, mode: "plan" } },
+	{ customType: "other", data: { version: 1, mode: "ask" } },
+	{ customType: LEARNING_MODES_STATE_TYPE, data: { version: 1, mode: "ask" } },
+]), "ask");
 eq("a missing entry yields nothing", modeFromEntries([{ customType: "other" }]), undefined);
-eq("a malformed payload yields nothing", modeFromEntryData({ selectedMode: "nope" }), undefined);
-eq("the plan flag wins at startup", resolveMode({ planFlag: true }), "plan");
-eq("the build flag wins at startup", resolveMode({ buildFlag: true, persisted: "plan" }), "build");
-eq("the persisted mode is the fallback", resolveMode({ persisted: "plan" }), "plan");
-eq("build is the default", resolveMode({}), "build");
+eq("legacy Plan/Build entries are not migrated", modeFromEntries([{ customType: "pi-plan-build-state", data: { version: 4, selectedMode: "plan" } }]), undefined);
+eq("a malformed payload yields nothing", modeFromEntryData({ version: 1, mode: "nope" }), undefined);
+eq("event snapshots use the same versioned mode contract", modeFromEntryData({ schemaVersion: 1, mode: "ask" }), "ask");
+eq("an unsupported state version yields nothing", modeFromEntryData({ version: 2, mode: "ask" }), undefined);
+eq("the Plan flag wins at startup", resolveMode({ planFlag: true }), "plan");
+eq("the Ask flag is recognized", resolveMode({ askFlag: true }), "ask");
+eq("the Build flag wins at startup", resolveMode({ buildFlag: true, persisted: "plan" }), "build");
+eq("the persisted Ask mode is the fallback", resolveMode({ persisted: "ask" }), "ask");
+eq("Build is the default", resolveMode({}), "build");
+eq("Ask maps to the Build permission profile", permissionProfile("ask"), "build");
+eq("Plan keeps its own permission profile", permissionProfile("plan"), "plan");
 
 // --- tool categories -----------------------------------------------------
 eq("read is a read tool", toolCategory("read"), "read");
@@ -979,8 +988,8 @@ check(
 );
 
 // --- behaviour reference --------------------------------------------------
-// BEHAVIOR.md is the quick lookup, so its tables are executed here rather than
-// trusted: a change to the engine that invalidates the doc fails the suite.
+// BEHAVIOR.md is the quick lookup, so its Build/Plan/Ask tables are executed rather than
+// trusted: a change to the engine that invalidates the docs fails the suite.
 
 const behavior = readFileSync(join(here, "..", "BEHAVIOR.md"), "utf8");
 
@@ -998,8 +1007,10 @@ function behaviorRows(heading: string): Array<[string, string]> {
 
 const buildRows = behaviorRows("### Build mode, Jev on, YOLO off");
 const planRows = behaviorRows("### Plan mode, Jev on, YOLO off");
+const askRows = behaviorRows("### Ask mode, Jev on, YOLO off");
 check("the behaviour reference has a build table", buildRows.length >= 20);
 check("the behaviour reference has a plan table", planRows.length >= 4);
+check("the behaviour reference has an Ask table", askRows.length >= 4);
 
 for (const [command, documented] of buildRows) {
 	const jevOn = resolveDeterministic({ toolName: "bash", command, mode: "build", switches: on, policy: basePolicy, cwd: CWD });
@@ -1015,6 +1026,13 @@ for (const [command, documented] of buildRows) {
 for (const [command, documented] of planRows) {
 	const plan = resolveDeterministic({ toolName: "bash", command, mode: "plan", switches: on, policy: basePolicy, cwd: CWD });
 	eq(`documented plan outcome: ${command}`, plan.kind, documented);
+}
+
+for (const [command, documented] of askRows) {
+	const ask = resolveDeterministic({ toolName: "bash", command, mode: "ask", switches: on, policy: basePolicy, cwd: CWD });
+	const build = resolveDeterministic({ toolName: "bash", command, mode: "build", switches: on, policy: basePolicy, cwd: CWD });
+	eq(`documented Ask outcome: ${command}`, ask.kind, documented);
+	eq(`Ask matches Build permission outcome: ${command}`, ask.kind, build.kind);
 }
 
 // --- report --------------------------------------------------------------

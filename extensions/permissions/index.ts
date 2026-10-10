@@ -41,16 +41,18 @@ import {
 	isMcpTool,
 	isShellTool,
 	modeFromEntries,
+	modeFromEntryData,
 	normalizeConfig,
 	PARENT_SESSION_ENV_KEY,
 	permissionIndicator,
+	permissionProfile,
 	parseJsonc,
 	parseForwardedResponse,
 	parseThreshold,
 	permissionArgumentCompletion,
 	permissionCompletions,
 	permissionsUsage,
-	PLAN_BUILD_STATE_TYPE,
+	LEARNING_MODES_STATE_EVENT,
 	recordClassification,
 	resolveDeterministic,
 	resolveMode,
@@ -115,6 +117,8 @@ interface ClassifyOutcome {
 }
 
 let state: State | undefined;
+let currentContext: ExtensionContext | undefined;
+let pendingModeEvent: { mode: Mode; sessionId?: string } | undefined;
 
 // --- paths and config -----------------------------------------------------
 
@@ -200,8 +204,8 @@ function readIntent(ctx: ExtensionContext, maxChars: number): IntentSnapshot {
 	return snapshotIntent({ sessionName, originalTask, latestUserMessage }, maxChars);
 }
 
-/** pi-plan-build publishes no API and emits no events, so the mode comes from state. */
-function readMode(ctx: ExtensionContext, pi: ExtensionAPI): Mode {
+/** The independent learning-modes extension persists mode snapshots and publishes the same contract on pi.events. */
+function readMode(ctx: ExtensionContext): Mode {
 	let persisted: Mode | undefined;
 	try {
 		persisted = modeFromEntries(
@@ -216,11 +220,7 @@ function readMode(ctx: ExtensionContext, pi: ExtensionAPI): Mode {
 	} catch {
 		persisted = undefined;
 	}
-	return resolveMode({
-		planFlag: pi.getFlag("plan") === true,
-		buildFlag: pi.getFlag("build") === true,
-		persisted,
-	});
+	return resolveMode({ persisted });
 }
 
 // --- state ----------------------------------------------------------------
@@ -239,7 +239,7 @@ function resetState(ctx: ExtensionContext, pi: ExtensionAPI): State {
 		configStatus: loaded.status,
 		configError: loaded.error,
 		switches: { jev: loaded.config.jev.enabled, yolo: loaded.config.yolo },
-		mode: readMode(ctx, pi),
+		mode: readMode(ctx),
 		cache: new VerdictCache<CachedVerdict>(loaded.config.cacheEntries),
 		breaker: new CircuitBreaker(loaded.config.failureThreshold),
 		intent: readIntent(ctx, loaded.config.maxIntentChars),
@@ -258,6 +258,7 @@ function resetState(ctx: ExtensionContext, pi: ExtensionAPI): State {
 }
 
 function ensureState(ctx: ExtensionContext, pi: ExtensionAPI): State {
+	currentContext = ctx;
 	return state ?? resetState(ctx, pi);
 }
 
@@ -312,15 +313,15 @@ function installArgumentCompletions(ctx: ExtensionContext): void {
 }
 
 /**
- * Re-read the mode when the session moved on. A composer toggle appends a
- * `pi-plan-build-state` entry, which moves the leaf, so this is what keeps the gate
- * and the `/permissions` command from evaluating against a stale mode.
+ * Re-read the mode when the session moved on. A learning-modes transition appends a
+ * versioned state entry and emits its public event; the branch read is the durable
+ * fallback that keeps the gate from evaluating against a stale mode.
  */
 function refreshMode(ctx: ExtensionContext, pi: ExtensionAPI, current: State): void {
 	const leafId = ctx.sessionManager.getLeafId();
 	if (leafId === current.leafId) return;
 	current.leafId = leafId;
-	current.mode = readMode(ctx, pi);
+	current.mode = readMode(ctx);
 }
 
 function warnConfigOnce(ctx: ExtensionContext, current: State): void {
@@ -660,9 +661,8 @@ async function resolveAsk(
 // --- prompt sanitization --------------------------------------------------
 
 /**
- * Tools denied for the current mode. Only effectful MCP is denied outright today;
- * `write` and `edit` stay listed in Plan mode because pi-plan-build still permits the
- * plan Markdown, and shell tools stay listed because reads are allowed there.
+ * Tools denied for the current mode. Only effectful MCP is hidden in Plan mode here;
+ * learning-modes owns file-path guards and the Plan-only attached-plan Markdown exception.
  */
 function deniedTools(current: State): string[] {
 	return current.mode === "plan" && current.config.modes.plan.mutations !== "allow" ? ["mcp"] : [];
@@ -706,7 +706,7 @@ function statusLine(current: State): string {
 			: "deterministic rules only, no classifier call";
 	return [
 		`permissions: enabled=${current.config.enabled ? "yes" : "no"}`,
-		`mode=${current.mode}`,
+		`mode=${current.mode} profile=${permissionProfile(current.mode)}`,
 		combination,
 		`(${effect})`,
 		`threshold=${current.config.jev.confidenceThreshold}`,
@@ -719,16 +719,36 @@ function statusLine(current: State): string {
 }
 
 export default function permissionsExtension(pi: ExtensionAPI): void {
+	pi.events.on(LEARNING_MODES_STATE_EVENT, (payload) => {
+		const mode = modeFromEntryData(payload);
+		if (!mode) return;
+		const session = payload && typeof payload === "object" ? (payload as { sessionId?: unknown }).sessionId : undefined;
+		if (currentContext && typeof session === "string" && session !== currentContext.sessionManager.getSessionId()) return;
+		if (!state) {
+			pendingModeEvent = { mode, ...(typeof session === "string" ? { sessionId: session } : {}) };
+			return;
+		}
+		state.mode = mode;
+		if (currentContext) {
+			state.leafId = currentContext.sessionManager.getLeafId();
+			syncStatus(currentContext, state);
+		}
+	});
+
 	pi.on("session_start", (_event, ctx) => {
+		currentContext = ctx;
 		const current = resetState(ctx, pi);
+		if (pendingModeEvent && (!pendingModeEvent.sessionId || pendingModeEvent.sessionId === ctx.sessionManager.getSessionId())) current.mode = pendingModeEvent.mode;
+		pendingModeEvent = undefined;
 		warnConfigOnce(ctx, current);
 		startForwardingWatcher(ctx);
 		installArgumentCompletions(ctx);
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
+		currentContext = ctx;
 		const current = ensureState(ctx, pi);
-		current.mode = readMode(ctx, pi);
+		current.mode = readMode(ctx);
 		current.leafId = ctx.sessionManager.getLeafId();
 		const denied = deniedTools(current);
 		if (denied.length > 0) {
@@ -790,7 +810,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					return;
 				}
 				case "mode": {
-					notify(ctx, `permissions: mode=${current.mode} (read from pi-plan-build state)`, "info");
+					notify(ctx, `permissions: mode=${current.mode} profile=${permissionProfile(current.mode)} (from learning-modes state)`, "info");
 					return;
 				}
 				case "threshold": {

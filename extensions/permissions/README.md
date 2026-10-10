@@ -34,8 +34,9 @@ Independent, four combinations. `/permissions status` shows which is active.
 | off | on | deterministic rules only; `ask` auto-approved; **hard blocks disabled** |
 
 Jev defaults **off** in `permissions.jsonc`, so the fast path is the default; turn it on
-per session with `/permissions jev on`. YOLO defaults off too, and with it on there is no
-floor at all.
+per session with `/permissions jev on`. YOLO defaults off too, and with it on this
+permissions layer has no floor. The separate learning-modes extension still enforces
+its Plan and plan-Markdown path guards on recognizable calls.
 
 The footer carries the indicator on its status line, below the stats line:
 `jev on · yolo off · thr 0.30 · jev-1.13`, gaining ` · N reqs` once Jev has classified
@@ -93,9 +94,9 @@ Two harness facts worth knowing:
   destructive (`rm -rf /usr/...`, `cat ~/.git-credentials`) measures the model, not the
   gate — it refuses, or quietly substitutes a read. Those verdicts are asserted
   deterministically in `lib.test.ts` instead.
-- Plan mode is driven from a session that already carries the `pi-plan-build-state`
-  entry, because `pi -p --plan` does not persist one in print mode, and `--mode json`
-  together with `--plan` produces only a session header.
+- Plan mode is driven from a session that already carries the versioned
+  `learning-modes-state` entry, so the test exercises the same persisted-mode contract
+  as the replacement user extension rather than relying on startup flags.
 
 The switch matrix runs against temp configs through `PI_PERMISSIONS_CONFIG_PATH`; the
 real `permissions.jsonc` is never modified.
@@ -115,7 +116,9 @@ emits two notifications (the status line and the counter line), which the harnes
 
 Reads (`read`, `grep`, `find`, `ls`) are deterministic only. Jev judges **shell commands
 only** (`bash`, `powershell`); `write`, `edit` and MCP are trusted, with the
-deterministic layers still applying to them. Plan tools are neutral.
+deterministic layers still applying to them. Ask is a distinct mode label with the
+Build permission profile. The `learning-modes` extension owns plan-Markdown path guards;
+Plan tools are neutral.
 
 - **Hard blocks**: credential patterns, substring matched, blocked outright for shell
   commands and asked about for path-bearing file tools.

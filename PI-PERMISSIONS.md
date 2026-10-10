@@ -45,41 +45,36 @@ Independent, so there are four combinations:
 Both default from the policy file — Jev off, YOLO off — and `/permissions jev on|off`
 and `/permissions yolo on|off` flip them for the session.
 
-**YOLO disables the credential and catastrophe hard blocks.** That is deliberate and it
-is the sharpest edge in the system: with YOLO on there is no floor at all, so a
-credential read or a write into `/usr` runs untouched, in any mode. The audit log is
-then the only record. Jev off is the opposite kind of switch: it changes nothing about
-what is allowed, it only removes the classifier calls.
+**YOLO disables this permissions layer's credential and catastrophe hard blocks.** That
+is deliberate and remains the sharpest edge here: with YOLO on, a credential read or a
+write into `/usr` can run through this gate. This is not a system-wide sandbox. The
+independent `learning-modes` extension still applies its Plan-mode read-only boundary
+and recognized `.pi/plans/` path guards; opaque scripts/tools remain outside those
+extension-level checks. Jev off is the opposite kind of switch: it changes nothing
+about what is allowed by this policy, it only removes classifier calls.
 
 ## Modes
 
-Every decision carries the current mode. The mode comes from `pi-plan-build`, which
-publishes no runtime API and emits no events, so it is read in this order:
+Every decision carries the current mode. The independent `learning-modes` extension
+persists a versioned `learning-modes-state` custom entry and emits the
+`learning-modes:state.v1` event. The permissions extension consumes the event for live
+mode changes and reads the branch entry on startup/restoration; a missing mode defaults
+to Build. Ask is retained as a distinct audit/UI label but maps to the Build permission
+profile. The active tool set is not treated as the mode signal.
 
-1. `pi.getFlag("plan")` / `pi.getFlag("build")` — the only signal available before the
-   first state entry exists.
-2. The newest `pi-plan-build-state` custom session entry from the session branch,
-   reading `data.selectedMode`.
-3. `"build"`.
+**What Plan mode does here.** With YOLO off, shell mutations and effectful MCP are
+refused by this extension, while read-only shell chains and ordinary read tools remain
+available. Plan-file editing is owned by `learning-modes`: only the attached plan
+Markdown may be written in Plan mode. Ask and Build use the Build permission profile
+for other project work, but the mode extension blocks recognized file mutations and
+detectable shell writes to `.pi/plans/` in both modes. Pathless/private tools, opaque
+scripts, and opaque MCP calls cannot be absolutely contained by a `tool_call` guard;
+YOLO retains its documented behavior for this permissions policy.
 
-Resolved per turn in `before_agent_start`, and refreshed on a tool call when the
-session leaf moved, so a mid-turn switch is seen. The active tool set is **not** a
-signal: `stableToolCatalog` defaults to `true`, so both modes receive the same managed
-plan tools.
-
-**What Plan mode does here.** Shell mutations are refused — anything that is not a
-read-only chain, so `rm`, `mv`, `sed -i`, `git reset --hard`, and a redirect are all
-blocked while `ls`, `cat`, `git status && git diff` still work. Effectful MCP is
-refused too, and effectful MCP tools are removed from the prompt for the turn.
-
-**What Plan mode deliberately does not own.** `write` and `edit` stay with
-`pi-plan-build`, which already blocks them in Plan mode and already exempts the plan
-Markdown that Plan mode has to be able to revise. Duplicating that here would have
-either blocked plan revision or required copying pi-plan-build's plan-path logic.
-
-Observed detail: `pi -p --plan` does **not** persist a state entry in print mode, so
-headless Plan testing drives the mode from a session that already carries the entry.
-The TUI path is the real one and is covered by the human checks.
+The public mode event is JSON-safe and versioned so the future UI can consume mode,
+plan, artifact, and permission-profile state without importing private extension modules
+or parsing transcript text. Durable mode and plan state is stored separately from those
+events.
 
 ## The deterministic core
 
@@ -116,7 +111,8 @@ before, are counted per session by tool name and arguments; the third one asks.
 **Scope.** Shell commands only (`bash`, `powershell`). Every other tool is trusted —
 `write`, `edit` and MCP never reach the classifier — with the deterministic layers still
 applying to them: the credential hard block checks a file tool's target path, Plan mode
-refuses effectful MCP, and `pi-plan-build` refuses `write` and `edit` in Plan mode.
+refuses effectful MCP, and `learning-modes` owns the plan-Markdown path guard. Ask uses
+Build's permission profile.
 
 Within shell commands Jev is consulted only when one **hides its intent**. Three things
 count:
@@ -228,8 +224,10 @@ their behaviour rather than changing it. `special.doom_loop: ask` is reimplement
   reads.
 - Jev's verdicts are probabilistic, and its failure mode is fail-open.
 - Forwarding is implemented but has not been exercised against a live subagent.
-- With YOLO on there is no floor at all, and with Jev off a destructive single command
-  is allowed outright: the deterministic layer has no opinion on `rm -rf /workspace`.
+- With YOLO on this permission layer has no floor for its credential/catastrophe checks,
+  and with Jev off a destructive single command is allowed outright: the deterministic
+  layer has no opinion on `rm -rf /workspace`. Independent learning-modes guards for Plan
+  shell mutations and recognizable `.pi/plans/` writes still apply.
 - The interpreter-payload list is a fixed pattern set; `bash script.sh` is a single
   command and is decided by the globs alone.
 - `PI_PERMISSIONS_CONFIG_PATH` points the policy at another file. It exists for the

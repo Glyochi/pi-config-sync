@@ -20,14 +20,20 @@ export interface PermissionsRules {
 	criteria: { allow: string; ask: string; deny: string };
 }
 
-export type Mode = "plan" | "build";
+export type Mode = "plan" | "build" | "ask";
 export type RuleState = "allow" | "ask" | "deny";
 
-/** The custom session entry pi-plan-build writes on every mode change. */
-export const PLAN_BUILD_STATE_TYPE = "pi-plan-build-state";
+/** Durable snapshot written by the independent learning-modes extension. */
+export const LEARNING_MODES_STATE_TYPE = "learning-modes-state";
+export const LEARNING_MODES_STATE_EVENT = "learning-modes:state.v1";
 
-/** Directories that stay writable in Plan mode, because plan Markdown lives there. */
-export const PLAN_ARTIFACT_DIR = "plans";
+/** Build and Ask share this policy profile; the mode label remains distinct for audit/UI. */
+export function permissionProfile(mode: Mode): "plan" | "build" {
+	return mode === "plan" ? "plan" : "build";
+}
+
+/** Project-local directory where learning-modes stores Plan Markdown. */
+export const PLAN_ARTIFACT_DIR = ".pi/plans";
 
 export interface PermissionsConfig {
 	enabled: boolean;
@@ -1180,18 +1186,19 @@ function asRuleMap(value: unknown, fallback: Record<string, RuleState>): Record<
 
 // --- modes ----------------------------------------------------------------
 
-/** Read `selectedMode` out of a `pi-plan-build-state` entry payload. */
+/** Read the versioned mode value from a learning-modes session entry or event payload. */
 export function modeFromEntryData(data: unknown): Mode | undefined {
 	if (!isRecord(data)) return undefined;
-	const selected = data.selectedMode;
-	return selected === "plan" || selected === "build" ? selected : undefined;
+	const mode = data.mode;
+	const version = data.version ?? data.schemaVersion;
+	return version === 1 && (mode === "plan" || mode === "build" || mode === "ask") ? mode : undefined;
 }
 
 /** Newest matching entry wins, so the branch is passed in path order. */
 export function modeFromEntries(entries: Array<{ customType?: string; data?: unknown }>): Mode | undefined {
 	let found: Mode | undefined;
 	for (const entry of entries) {
-		if (entry.customType !== PLAN_BUILD_STATE_TYPE) continue;
+		if (entry.customType !== LEARNING_MODES_STATE_TYPE) continue;
 		const mode = modeFromEntryData(entry.data);
 		if (mode !== undefined) found = mode;
 	}
@@ -1199,11 +1206,12 @@ export function modeFromEntries(entries: Array<{ customType?: string; data?: unk
 }
 
 /**
- * Startup flags win: they are the only signal available before the first state
- * entry exists. Otherwise the persisted mode, then the pi-plan-build default.
+ * Startup flags win when supplied; otherwise use the persisted learning-mode state,
+ * then Build. The independent extension currently selects modes with commands/shortcuts.
  */
-export function resolveMode(options: { planFlag?: boolean; buildFlag?: boolean; persisted?: Mode }): Mode {
+export function resolveMode(options: { planFlag?: boolean; buildFlag?: boolean; askFlag?: boolean; persisted?: Mode }): Mode {
 	if (options.buildFlag === true) return "build";
+	if (options.askFlag === true) return "ask";
 	if (options.planFlag === true) return "plan";
 	return options.persisted ?? "build";
 }
@@ -1249,7 +1257,7 @@ const PERMISSION_SUBCOMMANDS: PermissionSubcommand[] = [
 	{ name: "yolo", usage: "yolo on|off", description: "auto-approve asks and drop the hard blocks" },
 	{ name: "threshold", usage: "threshold [0..1]", description: "show or set the confidence threshold (session only)" },
 	{ name: "check", usage: "check <tool> <value>", description: "dry-run the decision for one call" },
-	{ name: "mode", usage: "mode", description: "the mode read from pi-plan-build state" },
+	{ name: "mode", usage: "mode", description: "the mode and effective permission profile from learning-modes state" },
 	{ name: "reload", usage: "reload", description: "re-read permissions.jsonc" },
 ];
 
@@ -1639,9 +1647,8 @@ export interface DeterministicInput {
  *
  * 1. YOLO on means no gating at all, hard blocks included.
  * 2. Hard blocks: credential patterns and catastrophic directories.
- * 3. Mode: shell mutations and effectful MCP are refused in Plan mode. `write` and
- *    `edit` are deliberately left to pi-plan-build, which already blocks them there
- *    and already exempts the plan Markdown that Plan mode has to be able to revise.
+ * 3. Mode: shell mutations and effectful MCP are refused in Plan mode. Ask uses the
+ *    Build mutation profile; learning-modes owns protected plan-Markdown editor paths.
  * 4. Declarative bash globs.
  * 5. Jev, for shell commands only, and only when one hides its intent
  *    (`needsJudgement`). Structure is not a reason to classify: the globs match the
@@ -1669,7 +1676,7 @@ export function resolveDeterministic(input: DeterministicInput): Decision {
 		}
 	}
 
-	if (mode === "plan" && (isShellTool(toolName) || isMcpTool(toolName))) {
+	if (permissionProfile(mode) === "plan" && (isShellTool(toolName) || isMcpTool(toolName))) {
 		const state = policy.modes.plan.mutations;
 		// Reads stay allowed: a read-only chain can only look at things, and blocking
 		// it would make Plan mode useless for inspecting the repo.
@@ -1692,7 +1699,7 @@ export function resolveDeterministic(input: DeterministicInput): Decision {
 
 	// Jev judges shell commands only. Every other tool is trusted, with the deterministic
 	// layers still applying to it: the credential hard block, the Plan-mode rule, and
-	// pi-plan-build's own refusal of write and edit in Plan mode.
+	// learning-modes' plan-Markdown path guard.
 	if (isShellTool(toolName) && switches.jev) {
 		// A read-only chain is free, and so is a command whose intent a glob can read.
 		if (input.command === undefined) return { kind: "allow" };

@@ -13,7 +13,7 @@ are re-checked against the engine by `tests/lib.test.ts`, so they cannot drift.
 | 1 | YOLO | allow — nothing runs, hard blocks included | `yolo` |
 | 2 | Credential hard block | block — a shell command containing a credential pattern, or a file tool targeting one | `hardBlock` |
 | 3 | Catastrophe gate | block — a shell command that *modifies* a catastrophic directory | `catastrophe` |
-| 4 | Mode | block — in Plan mode, a shell mutation or an effectful MCP call | `modes` |
+| 4 | Mode | block — in Plan mode, a shell mutation or an effectful MCP call; Ask uses Build's permission profile | `modes` |
 | 5 | Bash globs | allow / ask / deny — whole string, last match wins | `bash` |
 | 6 | Jev | allow / ask / deny — only for a shell command that hides its intent, and a verdict below the confidence threshold becomes ask | `jev`, `destructive` |
 | 7 | Doom loop | ask — the third identical call in a session | `doomLoop` |
@@ -21,7 +21,8 @@ are re-checked against the engine by `tests/lib.test.ts`, so they cannot drift.
 
 `classify` in the tables means the classifier decides; its verdict then becomes run,
 prompt, or block. `ask` prompts, or blocks when there is no UI to prompt with. YOLO
-auto-approves every `ask`.
+auto-approves every `ask`. These tables describe this permissions layer; the independent
+learning-modes extension's plan-Markdown/path guard is not overridden by its YOLO switch.
 
 ### Build mode, Jev on, YOLO off
 
@@ -60,6 +61,17 @@ shell chains still work.
 | `git status` | allow |
 | `rm /tmp/a.txt` | block |
 | `rm -rf /workspace/build` | block |
+
+### Ask mode, Jev on, YOLO off
+
+Ask is a distinct mode label, but its permissions profile is Build. Plan-Markdown path guards are separately owned by the learning-modes extension.
+
+| command | outcome |
+|---|---|
+| `ls -la /workspace` | allow |
+| `git push origin main` | ask |
+| `rm -rf /workspace/build` | allow |
+| `rm -rf /usr/share/x` | block |
 
 With **Jev off** every `classify` row above becomes `allow` — nothing else changes, and
 no classifier call is made. With **YOLO on** every row becomes `allow`, including the
@@ -112,7 +124,7 @@ that is not running would mislead.
 It is one line rather than inline with the cwd: a replaced footer cannot reproduce the
 `xp`, `(sub)`, routed-model and `(auto)` markers, which are not reachable from an
 extension. Other extensions share that line and it is sorted by key, so `git-sync` and
-`pi-plan-build` entries appear alongside it.
+other extension status entries appear alongside it.
 
 ## Asking at runtime
 
