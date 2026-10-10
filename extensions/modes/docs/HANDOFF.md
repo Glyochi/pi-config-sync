@@ -1,14 +1,14 @@
-# Learning Modes — Maintainer Handoff
+# Modes — Maintainer Handoff
 
 This document is the durable handoff for a future agent. It records the current design, implementation boundaries, validation, and the intended subagent roadmap. Read it with the source in `../` and the separate permissions extension at `~/.pi/agent/extensions/permissions/`.
 
 ## Purpose and installation
 
-`learning-modes` is a personal Pi extension under `~/.pi/agent/extensions/learning-modes/`. It replaces the configured `npm:@janvitos/pi-plan-build` package; do not load both because they own the same `/plan` and `/build` commands. The replacement is deliberately independent of upstream code updates. A few implementation patterns were adapted from the upstream MIT-licensed package; the relevant notice is in `../LICENSE`.
+`modes` is a personal Pi extension under `~/.pi/agent/extensions/modes/`. It replaces the configured `npm:@janvitos/pi-plan-build` package; do not load both because they own the same `/plan` and `/build` commands. The replacement is deliberately independent of upstream code updates. A few implementation patterns were adapted from the upstream MIT-licensed package; the relevant notice is in `../LICENSE`.
 
 The permissions extension remains separate and is the policy owner. The installed `@juicesharp/rpiv-ask-user-question` remains the owner of `ask_user_question`; do not register a duplicate. `pi-subagents` and `pi-web-access` are also separate installed packages and are not wrapped or copied by this extension.
 
-Legacy Plan/Build files under `~/.pi/agent/plans/` and old session entries are intentionally not migrated. New plans are project-local, so resume requires the same project checkout.
+Legacy Plan/Build files under `~/.pi/agent/plans/` and upstream `pi-plan-build` state are intentionally not migrated. New plans are project-local, so resume requires the same project checkout.
 
 ## Modes and shortcuts
 
@@ -39,7 +39,7 @@ Plan data is project-local:
 ```text
 <project>/.pi/plans/<plan-id>.md
 <project>/.pi/plans/state.json
-<project>/.pi/plans/.learning-modes.lock/   # transient lock while updating state
+<project>/.pi/plans/.modes.lock/   # transient lock while updating state
 ```
 
 `PlanStore` in `plan-store.ts` validates the versioned index, writes atomically, and uses a lock directory with PID/stale-lock handling so two Pi processes cannot silently overwrite ownership/status. The Markdown is the human-readable plan; `state.json` owns title/status/owner metadata. Plan status changes never rewrite the Markdown.
@@ -65,7 +65,7 @@ In TUI, both commands append a custom session entry rendered with `registerEntry
 
 New plan files use a concise Goal/Scope/Verification/Implementation Steps template. Top-level numbered work items are parsed from `## Implementation Steps`. In the public state event, each work item is `{ id, order, title, status: "planned" }`. The ID is a stable hash of normalized step text (duplicate identical steps receive an occurrence suffix); changing the instruction changes its ID. No per-step execution/completion state exists in this version.
 
-The `learning-modes` `tool_call` guard:
+The `modes` `tool_call` guard:
 
 - In Plan, permits recognized file mutators only for the attached, open plan Markdown owned by this session. Other project-file mutations and pathless file mutators are blocked.
 - In Ask/Build, blocks recognized path-bearing file mutators targeting any `.pi/plans/` data and blocks detectable non-read-only shell commands that mention `.pi/plans/`.
@@ -73,11 +73,11 @@ The `learning-modes` `tool_call` guard:
 
 The separate permissions extension maps Ask to Build's existing policy profile, keeps Ask as a distinct audit/status label, and preserves credential/catastrophe checks, external-effect asks, Jev, and YOLO semantics. Its `/permissions status` should report `mode=ask profile=build`.
 
-These are extension-level guards, **not an OS sandbox**. Pathless/private editors, scripts that construct or hide the protected path, and opaque MCP calls can bypass a tool-call path check; visible MCP plan paths are blocked unless the tool declares `readOnlyHint`. The current scope deliberately preserves Build-level shell/MCP availability otherwise. With YOLO, the permissions layer's hard blocks are bypassed, but the separate learning-modes guards for Plan shell writes and recognizable `.pi/plans/` targets still run.
+These are extension-level guards, **not an OS sandbox**. Pathless/private editors, scripts that construct or hide the protected path, and opaque MCP calls can bypass a tool-call path check; visible MCP plan paths are blocked unless the tool declares `readOnlyHint`. The current scope deliberately preserves Build-level shell/MCP availability otherwise. With YOLO, the permissions layer's hard blocks are bypassed, but the separate modes guards for Plan shell writes and recognizable `.pi/plans/` targets still run.
 
 ## Public UI state contract
 
-`state.ts` defines the durable mode entry type `learning-modes-state` and event `learning-modes:state.v1`. The extension appends a version-1 session entry for mode/attached-plan changes, and emits a JSON-safe snapshot/change event at session startup/restoration and after mode, plan, or artifact changes. The snapshot includes:
+`state.ts` defines the durable mode entry type `modes-state` and event `modes:state.v1`. The extension appends a version-1 session entry for mode/attached-plan changes, and emits a JSON-safe snapshot/change event at session startup/restoration and after mode, plan, or artifact changes. The snapshot includes:
 
 - `schemaVersion`, `kind`, `sessionId`, `cwd`, and `mode`;
 - `permissionProfile` (`plan` or `build`);

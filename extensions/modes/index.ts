@@ -28,8 +28,8 @@ import {
 	type PlanStateView,
 } from "./state.ts";
 
-const CONTEXT_TYPE = "learning-modes-context";
-const PLAN_INSPECTION_ENTRY_TYPE = "learning-modes-plan-inspection";
+const CONTEXT_TYPE = "modes-context";
+const PLAN_INSPECTION_ENTRY_TYPE = "modes-plan-inspection";
 const MANAGED_TOOLS = new Set(["plan_create", "plan_status"]);
 type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
 const PLAN_CREATE_DESCRIPTION = "In Plan mode only, create a project-local saved plan after the user requests a formal plan. Returns the canonical `.pi/plans/<id>.md` path. Then write a concise Goal/Scope/Verification/Implementation Steps document there. Do not use for ordinary research or discussion.";
@@ -105,7 +105,10 @@ function stateSnapshot(ctx: ExtensionContext, kind: ModeStateSnapshot["kind"]): 
 
 function publishState(pi: ExtensionAPI, ctx = currentContext, kind: ModeStateSnapshot["kind"] = "changed"): void {
 	if (!ctx) return;
-	try { pi.events.emit(MODE_STATE_EVENT, stateSnapshot(ctx, kind)); }
+	let snapshot: ModeStateSnapshot;
+	try { snapshot = stateSnapshot(ctx, kind); }
+	catch { return; }
+	try { pi.events.emit(MODE_STATE_EVENT, snapshot); }
 	catch { /* State persistence remains authoritative if a UI listener fails. */ }
 }
 
@@ -288,9 +291,10 @@ function restore(ctx: ExtensionContext, pi: ExtensionAPI): void {
 	publishState(pi, ctx, "snapshot");
 }
 
-export default function learningModes(pi: ExtensionAPI): void {
-	pi.registerEntryRenderer<{ markdown: string }>(PLAN_INSPECTION_ENTRY_TYPE, (entry) =>
-		new Markdown(entry.data?.markdown ?? "Plan inspection unavailable", 0, 0, getMarkdownTheme()));
+export default function modesExtension(pi: ExtensionAPI): void {
+	const renderPlanInspection = (entry: { data?: { markdown?: string } }) =>
+		new Markdown(entry.data?.markdown ?? "Plan inspection unavailable", 0, 0, getMarkdownTheme());
+	pi.registerEntryRenderer<{ markdown: string }>(PLAN_INSPECTION_ENTRY_TYPE, renderPlanInspection);
 
 	pi.registerTool({
 		name: "plan_create",

@@ -55,7 +55,7 @@ import {
 	permissionsUsage,
 	recordClassification,
 	modeFromEntryData,
-	LEARNING_MODES_STATE_TYPE,
+	MODES_STATE_TYPE,
 	normalizePath,
 	resolveTarget,
 	resolveDeterministic,
@@ -861,10 +861,10 @@ eq("a benign non-destructive command is still free", decideShell("npm test", on)
 eq("with jev off a destructive command is unchanged", decideShell("rm -rf /workspace/*", off).kind, "allow");
 
 // --- modes ---------------------------------------------------------------
-eq("newest learning-mode entry wins", modeFromEntries([
-	{ customType: LEARNING_MODES_STATE_TYPE, data: { version: 1, mode: "plan" } },
+eq("newest modes entry wins", modeFromEntries([
+	{ customType: MODES_STATE_TYPE, data: { version: 1, mode: "plan" } },
 	{ customType: "other", data: { version: 1, mode: "ask" } },
-	{ customType: LEARNING_MODES_STATE_TYPE, data: { version: 1, mode: "ask" } },
+	{ customType: MODES_STATE_TYPE, data: { version: 1, mode: "ask" } },
 ]), "ask");
 eq("a missing entry yields nothing", modeFromEntries([{ customType: "other" }]), undefined);
 eq("legacy Plan/Build entries are not migrated", modeFromEntries([{ customType: "pi-plan-build-state", data: { version: 4, selectedMode: "plan" } }]), undefined);

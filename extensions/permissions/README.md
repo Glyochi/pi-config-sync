@@ -35,7 +35,7 @@ Independent, four combinations. `/permissions status` shows which is active.
 
 Jev defaults **off** in `permissions.jsonc`, so the fast path is the default; turn it on
 per session with `/permissions jev on`. YOLO defaults off too, and with it on this
-permissions layer has no floor. The separate learning-modes extension still enforces
+permissions layer has no floor. The separate modes extension still enforces
 its Plan and plan-Markdown path guards on recognizable calls.
 
 The footer carries the indicator on its status line, below the stats line:
@@ -95,7 +95,7 @@ Two harness facts worth knowing:
   gate — it refuses, or quietly substitutes a read. Those verdicts are asserted
   deterministically in `lib.test.ts` instead.
 - Plan mode is driven from a session that already carries the versioned
-  `learning-modes-state` entry, so the test exercises the same persisted-mode contract
+  `modes-state` entry, so the test exercises the same persisted-mode contract
   as the replacement user extension rather than relying on startup flags.
 
 The switch matrix runs against temp configs through `PI_PERMISSIONS_CONFIG_PATH`; the
@@ -117,7 +117,7 @@ emits two notifications (the status line and the counter line), which the harnes
 Reads (`read`, `grep`, `find`, `ls`) are deterministic only. Jev judges **shell commands
 only** (`bash`, `powershell`); `write`, `edit` and MCP are trusted, with the
 deterministic layers still applying to them. Ask is a distinct mode label with the
-Build permission profile. The `learning-modes` extension owns plan-Markdown path guards;
+Build permission profile. The `modes` extension owns plan-Markdown path guards;
 Plan tools are neutral.
 
 - **Hard blocks**: credential patterns, substring matched, blocked outright for shell

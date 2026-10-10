@@ -21,7 +21,7 @@ export interface PlanIndex {
 }
 
 const INDEX_FILE = "state.json";
-const LOCK_DIR = ".learning-modes.lock";
+const LOCK_DIR = ".modes.lock";
 const LOCK_STALE_MS = 30_000;
 const LOCK_TIMEOUT_MS = 5_000;
 

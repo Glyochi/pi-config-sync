@@ -14,7 +14,7 @@
   //   jev off, yolo off -> deterministic rules only, no classifier call; ask prompts
   //   jev off, yolo on  -> deterministic rules only; ask auto-approved
   // YOLO disables this policy layer's credential and catastrophe hard blocks. The
-  // independent learning-modes extension still protects its owned plan files. Off by
+  // independent modes extension still protects its owned plan files. Off by
   // default: the fast path decides most calls, and
   // /permissions jev on turns on semantic review for the session.
   "jev": {
@@ -32,9 +32,9 @@
 
   // ---- Modes ---------------------------------------------------------------
   // What a mutation does per mode. Ask uses the Build policy in this layer; the
-  // independent learning-modes extension publishes the mode contract and protects
+  // independent modes extension publishes the mode contract and protects
   // plan Markdown from Ask/Build editors. Plan's attached plan-file exception remains
-  // in learning-modes, while this layer owns shell mutations and effectful MCP.
+  // in modes, while this layer owns shell mutations and effectful MCP.
   "modes": {
     "plan": { "mutations": "deny" },
     "build": { "mutations": "allow" }

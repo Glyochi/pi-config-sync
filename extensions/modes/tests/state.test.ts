@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+	MODE_STATE_ENTRY_TYPE,
+	MODE_STATE_EVENT,
 	decodePersistedModeState,
 	latestModeState,
 	makeModeStateSnapshot,
@@ -17,11 +19,16 @@ test("mode state accepts Ask/Plan/Build and rejects unknown schema", () => {
 	assert.equal(decodePersistedModeState({ version: 2, mode: "build" }), undefined);
 });
 
+test("mode contract uses the modes namespace", () => {
+	assert.equal(MODE_STATE_ENTRY_TYPE, "modes-state");
+	assert.equal(MODE_STATE_EVENT, "modes:state.v1");
+});
+
 test("latest valid branch entry wins", () => {
 	assert.equal(latestModeState([
-		{ customType: "learning-modes-state", data: { version: 1, mode: "plan" } },
+		{ customType: MODE_STATE_ENTRY_TYPE, data: { version: 1, mode: "plan" } },
 		{ customType: "other", data: { version: 1, mode: "ask" } },
-		{ customType: "learning-modes-state", data: { version: 1, mode: "ask", activePlanId: "plan-a" } },
+		{ customType: MODE_STATE_ENTRY_TYPE, data: { version: 1, mode: "ask", activePlanId: "plan-a" } },
 	])?.mode, "ask");
 });
 

@@ -6,7 +6,7 @@ import path from "node:path";
 import { PlanStore, planIndexPath, planMarkdownPath } from "../plan-store.ts";
 
 async function withTempProject(run: (cwd: string) => Promise<void>): Promise<void> {
-	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "learning-modes-"));
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "modes-"));
 	try { await run(cwd); }
 	finally { fs.rmSync(cwd, { recursive: true, force: true }); }
 }

@@ -36,11 +36,11 @@ fi
 printf '%s\n' '{"jev":{"enabled":true},"yolo":false}' >"$TMP_DIR/jev-on.jsonc"
 printf '%s\n' '{"jev":{"enabled":false},"yolo":true}' >"$TMP_DIR/yolo-on.jsonc"
 
-# A session that already carries the independent learning-modes state entry, so the
+# A session that already carries the independent modes state entry, so the
 # permission extension exercises the same persisted mode contract as TUI/RPC sessions.
 cat >"$TMP_DIR/plan-session.jsonl" <<'JSON'
 {"type":"session","version":3,"id":"01a1146a-0000-7000-8000-0000000000aa","timestamp":"2026-10-07T14:00:00.000Z","cwd":"/workspace"}
-{"type":"custom","id":"p1","parentId":null,"timestamp":"2026-10-07T14:00:01.000Z","customType":"learning-modes-state","data":{"version":1,"mode":"plan"}}
+{"type":"custom","id":"p1","parentId":null,"timestamp":"2026-10-07T14:00:01.000Z","customType":"modes-state","data":{"version":1,"mode":"plan"}}
 JSON
 
 # Print the text of every tool result in a `pi --mode json` transcript.

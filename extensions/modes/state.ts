@@ -1,5 +1,5 @@
-export const MODE_STATE_ENTRY_TYPE = "learning-modes-state";
-export const MODE_STATE_EVENT = "learning-modes:state.v1";
+export const MODE_STATE_ENTRY_TYPE = "modes-state";
+export const MODE_STATE_EVENT = "modes:state.v1";
 export const MODE_STATE_VERSION = 1 as const;
 
 export type Mode = "ask" | "plan" | "build";

@@ -22,7 +22,7 @@ are re-checked against the engine by `tests/lib.test.ts`, so they cannot drift.
 `classify` in the tables means the classifier decides; its verdict then becomes run,
 prompt, or block. `ask` prompts, or blocks when there is no UI to prompt with. YOLO
 auto-approves every `ask`. These tables describe this permissions layer; the independent
-learning-modes extension's plan-Markdown/path guard is not overridden by its YOLO switch.
+modes extension's plan-Markdown/path guard is not overridden by its YOLO switch.
 
 ### Build mode, Jev on, YOLO off
 
@@ -64,7 +64,7 @@ shell chains still work.
 
 ### Ask mode, Jev on, YOLO off
 
-Ask is a distinct mode label, but its permissions profile is Build. Plan-Markdown path guards are separately owned by the learning-modes extension.
+Ask is a distinct mode label, but its permissions profile is Build. Plan-Markdown path guards are separately owned by the modes extension.
 
 | command | outcome |
 |---|---|

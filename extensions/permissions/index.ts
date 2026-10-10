@@ -52,7 +52,7 @@ import {
 	permissionArgumentCompletion,
 	permissionCompletions,
 	permissionsUsage,
-	LEARNING_MODES_STATE_EVENT,
+	MODES_STATE_EVENT,
 	recordClassification,
 	resolveDeterministic,
 	resolveMode,
@@ -204,7 +204,7 @@ function readIntent(ctx: ExtensionContext, maxChars: number): IntentSnapshot {
 	return snapshotIntent({ sessionName, originalTask, latestUserMessage }, maxChars);
 }
 
-/** The independent learning-modes extension persists mode snapshots and publishes the same contract on pi.events. */
+/** The independent modes extension persists mode snapshots and publishes the same contract on pi.events. */
 function readMode(ctx: ExtensionContext): Mode {
 	let persisted: Mode | undefined;
 	try {
@@ -313,8 +313,8 @@ function installArgumentCompletions(ctx: ExtensionContext): void {
 }
 
 /**
- * Re-read the mode when the session moved on. A learning-modes transition appends a
- * versioned state entry and emits its public event; the branch read is the durable
+ * Re-read the mode when the session moved on. A modes transition appends a versioned
+ * state entry and emits its public event; the branch read is the durable
  * fallback that keeps the gate from evaluating against a stale mode.
  */
 function refreshMode(ctx: ExtensionContext, pi: ExtensionAPI, current: State): void {
@@ -662,7 +662,7 @@ async function resolveAsk(
 
 /**
  * Tools denied for the current mode. Only effectful MCP is hidden in Plan mode here;
- * learning-modes owns file-path guards and the Plan-only attached-plan Markdown exception.
+ * modes owns file-path guards and the Plan-only attached-plan Markdown exception.
  */
 function deniedTools(current: State): string[] {
 	return current.mode === "plan" && current.config.modes.plan.mutations !== "allow" ? ["mcp"] : [];
@@ -719,7 +719,7 @@ function statusLine(current: State): string {
 }
 
 export default function permissionsExtension(pi: ExtensionAPI): void {
-	pi.events.on(LEARNING_MODES_STATE_EVENT, (payload) => {
+	const handleModeStateEvent = (payload: unknown) => {
 		const mode = modeFromEntryData(payload);
 		if (!mode) return;
 		const session = payload && typeof payload === "object" ? (payload as { sessionId?: unknown }).sessionId : undefined;
@@ -733,7 +733,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			state.leafId = currentContext.sessionManager.getLeafId();
 			syncStatus(currentContext, state);
 		}
-	});
+	};
+	pi.events.on(MODES_STATE_EVENT, handleModeStateEvent);
 
 	pi.on("session_start", (_event, ctx) => {
 		currentContext = ctx;
@@ -810,7 +811,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					return;
 				}
 				case "mode": {
-					notify(ctx, `permissions: mode=${current.mode} profile=${permissionProfile(current.mode)} (from learning-modes state)`, "info");
+					notify(ctx, `permissions: mode=${current.mode} profile=${permissionProfile(current.mode)} (from modes state)`, "info");
 					return;
 				}
 				case "threshold": {

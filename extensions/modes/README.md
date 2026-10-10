@@ -1,4 +1,4 @@
-# Learning Modes
+# Modes
 
 A small, independent user extension providing **Ask**, **Plan**, and **Build** modes. It is not a runtime dependency of `@janvitos/pi-plan-build`.
 
@@ -18,7 +18,7 @@ Switching manually from Plan to Build authorizes work on the attached plan when 
 
 ## Extension state contract
 
-The extension emits versioned, JSON-safe `learning-modes:state.v1` snapshots and changes on `pi.events`. The payload includes the selected mode, effective permission profile, active plan summary/owner, stable work-item IDs/orders/titles/status, and `ask_tools/` artifact references. Durable state is stored separately; the event does not duplicate conversation or tool output. A UI extension should subscribe to the event rather than importing private modules or parsing Markdown prose.
+The extension stores versioned `modes-state` session entries and emits JSON-safe `modes:state.v1` snapshots and changes on `pi.events`. The payload includes the selected mode, effective permission profile, active plan summary/owner, stable work-item IDs/orders/titles/status, and `ask_tools/` artifact references. The event does not duplicate conversation or tool output. A UI extension should subscribe to the event rather than importing private modules or parsing Markdown prose.
 
 The separate `permissions` extension consumes the persisted mode contract and `pi.events` updates, records Ask as a distinct mode, and maps it to Build's existing permission profile. Plan blocks non-read-only shell and MCP calls and may edit only its attached plan Markdown. Ask/Build path-bearing edits and detectable shell writes to `.pi/plans/` are blocked; pathless/private tools, scripts that hide their targets, and opaque MCP tools cannot be fully sandboxed by an extension hook.
 

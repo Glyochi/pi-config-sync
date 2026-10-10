@@ -48,23 +48,22 @@ and `/permissions yolo on|off` flip them for the session.
 **YOLO disables this permissions layer's credential and catastrophe hard blocks.** That
 is deliberate and remains the sharpest edge here: with YOLO on, a credential read or a
 write into `/usr` can run through this gate. This is not a system-wide sandbox. The
-independent `learning-modes` extension still applies its Plan-mode read-only boundary
+independent `modes` extension still applies its Plan-mode read-only boundary
 and recognized `.pi/plans/` path guards; opaque scripts/tools remain outside those
 extension-level checks. Jev off is the opposite kind of switch: it changes nothing
 about what is allowed by this policy, it only removes classifier calls.
 
 ## Modes
 
-Every decision carries the current mode. The independent `learning-modes` extension
-persists a versioned `learning-modes-state` custom entry and emits the
-`learning-modes:state.v1` event. The permissions extension consumes the event for live
-mode changes and reads the branch entry on startup/restoration; a missing mode defaults
-to Build. Ask is retained as a distinct audit/UI label but maps to the Build permission
-profile. The active tool set is not treated as the mode signal.
+Every decision carries the current mode. The independent `modes` extension persists a
+versioned `modes-state` custom entry and emits the `modes:state.v1` event. The
+permissions extension consumes the event for live mode changes and reads the branch entry
+on startup/restoration; a missing mode defaults to Build. Ask is retained
+as a distinct audit/UI label but maps to the Build permission profile. The active tool set is not treated as the mode signal.
 
 **What Plan mode does here.** With YOLO off, shell mutations and effectful MCP are
 refused by this extension, while read-only shell chains and ordinary read tools remain
-available. Plan-file editing is owned by `learning-modes`: only the attached plan
+available. Plan-file editing is owned by `modes`: only the attached plan
 Markdown may be written in Plan mode. Ask and Build use the Build permission profile
 for other project work, but the mode extension blocks recognized file mutations and
 detectable shell writes to `.pi/plans/` in both modes. Pathless/private tools, opaque
@@ -111,7 +110,7 @@ before, are counted per session by tool name and arguments; the third one asks.
 **Scope.** Shell commands only (`bash`, `powershell`). Every other tool is trusted —
 `write`, `edit` and MCP never reach the classifier — with the deterministic layers still
 applying to them: the credential hard block checks a file tool's target path, Plan mode
-refuses effectful MCP, and `learning-modes` owns the plan-Markdown path guard. Ask uses
+refuses effectful MCP, and `modes` owns the plan-Markdown path guard. Ask uses
 Build's permission profile.
 
 Within shell commands Jev is consulted only when one **hides its intent**. Three things
@@ -226,7 +225,7 @@ their behaviour rather than changing it. `special.doom_loop: ask` is reimplement
 - Forwarding is implemented but has not been exercised against a live subagent.
 - With YOLO on this permission layer has no floor for its credential/catastrophe checks,
   and with Jev off a destructive single command is allowed outright: the deterministic
-  layer has no opinion on `rm -rf /workspace`. Independent learning-modes guards for Plan
+  layer has no opinion on `rm -rf /workspace`. Independent modes guards for Plan
   shell mutations and recognizable `.pi/plans/` writes still apply.
 - The interpreter-payload list is a fixed pattern set; `bash script.sh` is a single
   command and is decided by the globs alone.
