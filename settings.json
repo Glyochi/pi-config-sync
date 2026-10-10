@@ -1,5 +1,5 @@
 {
-  "defaultProvider": "opencode",
+  "defaultProvider": "openai",
   "defaultModel": "gpt-6-luna",
   "packages": [
     "npm:pi-config-sync@0.3.0",
