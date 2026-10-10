@@ -136,8 +136,8 @@ Plan tools are neutral.
   external-effect command is decided without the classifier, and benign chains stay
   free. A verdict below `jev.confidenceThreshold` (default `0.3`) is not trusted and
   becomes an ask, so it runs under YOLO and prompts without it. `/permissions threshold`
-  moves that line for the session; the footer shows the threshold in force, and the
-  counters in `/permissions status` split each raw verdict by the side it landed on.
+  moves that line for the session; the chatbox-status widget shows the threshold in force,
+  and the counters in `/permissions status` split each raw verdict by the side it landed on.
 - **Working-directory deletes are decidable.** `rm /tmp/a.txt`, `rm -rf
   /workspace/build`, and `rm -rf build` touch specific paths inside the working
   directories, so they are allowed without a classifier call even with Jev on. A glob
@@ -157,8 +157,8 @@ decision, source, reason), which is denylisted from pi-config-sync.
   `threshold=`, `model=`, `calls=`, the counter line, and `config=loaded`.
 - `/permissions threshold 0.9`, then a command Jev rates below 0.9 prompts with the
   unsure framing; `/permissions threshold 0.3` and the same command is trusted again.
-- `/permissions jev on`, then a compound command runs and the footer or `/session` shows
-  a `Tools/summaries` cost for it; `/permissions jev off` and the next one adds none.
+- `/permissions jev on`, then a compound command runs and the chatbox-status widget or
+  `/session` shows a `Tools/summaries` cost for it; `/permissions jev off` and the next one adds none.
 - `/permissions yolo on`, then a credential read succeeds — expected, and the point of
   the switch.
 - Switch to Plan mode in the TUI: a shell mutation is refused while `ls` and

@@ -77,7 +77,7 @@ function stableStepId(normalized: string, occurrence: number): string {
 
 function cleanGoalSummary(lines: readonly string[]): string | undefined {
 	const normalized = lines
-		.map((line) => line.trim().replace(/^(?:[-*+]|\d+\.)\s+/, ""))
+		.map((line) => line.trim().replace(/^#{1,6}\s+/, "").replace(/^(?:[-*+]|\d+\.)\s+/, ""))
 		.filter(Boolean)
 		.join(" ")
 		.replace(/`([^`]+)`/g, "$1")

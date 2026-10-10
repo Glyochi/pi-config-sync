@@ -85,15 +85,15 @@ function planLine(snapshot: ModeStateSnapshot | undefined): string | undefined {
 	return `Plan: ${title}${goal ? ` — ${goal}` : ""}`;
 }
 
-function permissionsLine(snapshot: PermissionsStateSnapshot | undefined): string {
+function permissionsLine(
+	snapshot: PermissionsStateSnapshot | undefined,
+	colorize: (color: "warning" | "error", text: string) => string,
+): string {
 	if (!snapshot) return "Permissions: unavailable";
 	if (!snapshot.enabled) return "Permissions: off";
-	const parts = [
-		`jev ${snapshot.jev ? "on" : "off"}`,
-		`yolo ${snapshot.yolo ? "on" : "off"}`,
-		`thr ${snapshot.threshold.toFixed(2)}`,
-		snapshot.model,
-	];
+	const jev = snapshot.jev ? colorize("warning", "jev on") : "jev off";
+	const yolo = snapshot.yolo ? colorize("error", "yolo on") : "yolo off";
+	const parts = [jev, yolo, `thr ${snapshot.threshold.toFixed(2)}`, snapshot.model];
 	if (snapshot.calls > 0) parts.push(`${snapshot.calls} reqs`);
 	return `Permissions: ${parts.join(" · ")}`;
 }
@@ -112,11 +112,11 @@ function renderWidget(): void {
 	const plan = planLine(modeSnapshot);
 	if (plan) lines.push(plan);
 	lines.push(timingLine(performance.now()));
-	lines.push(permissionsLine(permissionsSnapshot));
 	try {
 		ctx.ui.setWidget(WIDGET_KEY, (_tui, theme) => {
 			const mode = theme.fg("accent", lines[0] ?? "Mode: unavailable");
-			return new Text([mode, ...lines.slice(1)].join("\n"), 0, 0);
+			const permissions = permissionsLine(permissionsSnapshot, (color, text) => theme.fg(color, text));
+			return new Text([mode, ...lines.slice(1), permissions].join("\n"), 0, 0);
 		}, { placement: "aboveEditor" });
 	} catch {
 		// The consumer is display-only; unsupported UI modes must not affect Pi.
@@ -151,8 +151,8 @@ function handlePermissionsSnapshot(payload: unknown): void {
 }
 
 export default function chatboxStatusExtension(pi: ExtensionAPI): void {
-	pi.events.on(MODE_STATE_EVENT, handleModeSnapshot);
-	pi.events.on(PERMISSIONS_STATE_EVENT, handlePermissionsSnapshot);
+	const unsubscribeMode = pi.events.on(MODE_STATE_EVENT, handleModeSnapshot);
+	const unsubscribePermissions = pi.events.on(PERMISSIONS_STATE_EVENT, handlePermissionsSnapshot);
 
 	pi.on("session_start", (_event, ctx) => {
 		const nextSessionId = sessionId(ctx);
@@ -209,7 +209,12 @@ export default function chatboxStatusExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		stopTimer();
-		if (ctx.mode === "tui") ctx.ui.setWidget(WIDGET_KEY, undefined);
+		if (ctx.mode === "tui") {
+			try { ctx.ui.setWidget(WIDGET_KEY, undefined); }
+			catch { /* The UI may already be torn down. */ }
+		}
+		unsubscribeMode();
+		unsubscribePermissions();
 		if (context === ctx) context = undefined;
 		activeSessionId = undefined;
 		activeCwd = undefined;
