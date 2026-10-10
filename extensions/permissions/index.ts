@@ -20,6 +20,11 @@ import {
 	type ExtensionContext,
 	type ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
+import {
+	PERMISSIONS_STATE_EVENT,
+	PERMISSIONS_STATE_VERSION,
+	type PermissionsStateSnapshot,
+} from "../shared/contracts.ts";
 
 import {
 	addUsage,
@@ -44,7 +49,6 @@ import {
 	modeFromEntryData,
 	normalizeConfig,
 	PARENT_SESSION_ENV_KEY,
-	permissionIndicator,
 	permissionProfile,
 	parseJsonc,
 	parseForwardedResponse,
@@ -253,7 +257,7 @@ function resetState(ctx: ExtensionContext, pi: ExtensionAPI): State {
 		leafId: null,
 	};
 	state = next;
-	syncStatus(ctx, next);
+	publishPermissionState(pi, ctx, next, "snapshot");
 	return next;
 }
 
@@ -262,28 +266,27 @@ function ensureState(ctx: ExtensionContext, pi: ExtensionAPI): State {
 	return state ?? resetState(ctx, pi);
 }
 
-/**
- * The footer indicator, on the built-in footer's extension status line. Guarded like
- * `notify`, so a non-UI mode is a no-op.
- */
-function syncStatus(ctx: ExtensionContext, current: State): void {
-	try {
-		const indicator = permissionIndicator({
-			enabled: current.config.enabled,
-			jev: current.switches.jev,
-			yolo: current.switches.yolo,
-			threshold: current.config.jev.confidenceThreshold,
-			model: current.config.jev.model.id,
-			calls: current.counters.total,
-		});
-		// Only the two `on` words carry a colour; the line is never coloured as a whole.
-		const line = indicator.segments
-			.map((segment) => (segment.color === undefined ? segment.text : ctx.ui.theme.fg(segment.color, segment.text)))
-			.join(" · ");
-		ctx.ui.setStatus("permissions", line);
-	} catch {
-		// No UI in this mode.
-	}
+/** Publish a compact, JSON-safe snapshot; the UI renderer owns all presentation. */
+function publishPermissionState(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	current: State,
+	kind: PermissionsStateSnapshot["kind"] = "changed",
+): void {
+	const snapshot: PermissionsStateSnapshot = {
+		schemaVersion: PERMISSIONS_STATE_VERSION,
+		kind,
+		sessionId: ctx.sessionManager.getSessionId() || "ephemeral",
+		enabled: current.config.enabled,
+		jev: current.switches.jev,
+		yolo: current.switches.yolo,
+		threshold: current.config.jev.confidenceThreshold,
+		model: current.config.jev.model.id,
+		calls: current.counters.total,
+		updatedAt: Date.now(),
+	};
+	try { pi.events.emit(PERMISSIONS_STATE_EVENT, snapshot); }
+	catch { /* A display consumer must never affect permission decisions. */ }
 }
 
 /**
@@ -612,7 +615,7 @@ async function gate(
 		probabilities: cached.probabilities,
 		threshold,
 	});
-	if (cachedBefore === undefined) syncStatus(ctx, current);
+	if (cachedBefore === undefined) publishPermissionState(pi, ctx, current);
 	const { verdict, downgraded } = effectiveVerdict(cached.verdict, cached.confidence, cached.probabilities, threshold);
 	const action = decide(verdict, { hasUI: ctx.hasUI, yolo: false });
 	audit({
@@ -729,15 +732,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		state.mode = mode;
-		if (currentContext) {
-			state.leafId = currentContext.sessionManager.getLeafId();
-			syncStatus(currentContext, state);
-		}
+		if (currentContext) state.leafId = currentContext.sessionManager.getLeafId();
 	};
 	pi.events.on(MODES_STATE_EVENT, handleModeStateEvent);
 
 	pi.on("session_start", (_event, ctx) => {
 		currentContext = ctx;
+		try { ctx.ui.setStatus("permissions", undefined); }
+		catch { /* Remove a stale indicator from a previously loaded extension version. */ }
 		const current = resetState(ctx, pi);
 		if (pendingModeEvent && (!pendingModeEvent.sessionId || pendingModeEvent.sessionId === ctx.sessionManager.getSessionId())) current.mode = pendingModeEvent.mode;
 		pendingModeEvent = undefined;
@@ -802,7 +804,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					const mode = rest.toLowerCase();
 					const next = mode === "on" ? true : mode === "off" ? false : !current.switches[sub];
 					current.switches[sub] = next;
-					syncStatus(ctx, current);
+					publishPermissionState(pi, ctx, current);
 					notify(
 						ctx,
 						`permissions: ${sub} ${next ? "on" : "off"} — ${statusLine(current)}`,
@@ -831,7 +833,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						return;
 					}
 					current.config = { ...current.config, jev: { ...current.config.jev, confidenceThreshold: value } };
-					syncStatus(ctx, current);
+					publishPermissionState(pi, ctx, current);
 					notify(ctx, `permissions: threshold=${value} for this session (not saved)`, "info");
 					return;
 				}

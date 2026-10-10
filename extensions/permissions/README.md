@@ -38,11 +38,14 @@ per session with `/permissions jev on`. YOLO defaults off too, and with it on th
 permissions layer has no floor. The separate modes extension still enforces
 its Plan and plan-Markdown path guards on recognizable calls.
 
-The footer carries the indicator on its status line, below the stats line:
-`jev on · yolo off · thr 0.30 · jev-1.13`, gaining ` · N reqs` once Jev has classified
-something (cache hits are not classifications). Only `jev on` (warning colour) and
-`yolo on` (error colour) are coloured, and it reads `permissions off` when the gate is
-disabled. Other extensions share that line.
+The permissions extension publishes a versioned `permissions:state.v1` snapshot on
+`pi.events`; the passive `chatbox-status` widget owns its presentation. The payload carries
+the overall gate state, Jev/YOLO switches, threshold, model ID, and classification count.
+The widget preserves the prior indicator semantics: `permissions off` when the gate is
+disabled, otherwise `jev on · yolo off · thr 0.30 · jev-1.13`, gaining ` · N reqs` after
+the first classification (cache hits are not classifications). The old footer status line
+is retired to avoid duplicate indicators. See [`../EXTENSION-CONVENTIONS.md`](../EXTENSION-CONVENTIONS.md)
+and [`../shared/contracts.ts`](../shared/contracts.ts) for the shared interaction contract.
 
 `/permissions threshold <0..1>` changes the confidence threshold for the session only —
 nothing is written, so `/permissions reload` restores the file's value. `/permissions

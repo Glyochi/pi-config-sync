@@ -65,6 +65,32 @@ test("plan summary ignores fenced examples and gives work items stable IDs", () 
 	assert.equal(summary.steps[0]?.id, reordered.steps[1]?.id);
 });
 
+test("plan Goal summary is plain text, bounded, and excludes other sections and fenced examples", () => {
+	const markdown = [
+		"# Parser cleanup",
+		"",
+		"## Goal",
+		"Build **a fast** parser with `stable IDs` and [clear output](https://example.test).",
+		"",
+		"```md",
+		"## Scope",
+		"This fenced text is not a heading.",
+		"```",
+		"",
+		"## Scope",
+		"Do not include this boundary text.",
+		"",
+		"## Implementation Steps",
+		"1. Add tests.",
+	].join("\n");
+	const summary = summarizePlanMarkdown(markdown);
+	assert.equal(summary.goalSummary, "Build a fast parser with stable IDs and clear output.");
+	assert.equal(summarizePlanMarkdown("# No goal here\n\n## Scope\nNot a Goal.").goalSummary, undefined);
+	const longGoal = summarizePlanMarkdown(`# Long\n\n## Goal\n${"word ".repeat(100)}`).goalSummary;
+	assert.equal(longGoal?.length, 240);
+	assert.equal(longGoal?.endsWith("…"), true);
+});
+
 test("plan template satisfies the lightweight plan format", () => {
 	const template = createPlanTemplate("  Learn   parsing  ");
 	assert.equal(inspectPlanMarkdown(template).title, "Learn parsing");

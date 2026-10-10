@@ -1,58 +1,30 @@
-export const MODE_STATE_ENTRY_TYPE = "modes-state";
-export const MODE_STATE_EVENT = "modes:state.v1";
-export const MODE_STATE_VERSION = 1 as const;
+import {
+	MODE_STATE_ENTRY_TYPE,
+	MODE_STATE_EVENT,
+	MODE_STATE_VERSION,
+	isMode,
+	type ArtifactReference,
+	type Mode,
+	type ModeStateSnapshot,
+	type PermissionProfile,
+	type PersistedModeState,
+	type PlanStateView,
+	type PlanStatus,
+	type PlanWorkItem,
+} from "../shared/contracts.ts";
 
-export type Mode = "ask" | "plan" | "build";
-export type PlanStatus = "open" | "completed" | "blocked";
-export type PermissionProfile = "plan" | "build";
-
-export interface PersistedModeState {
-	version: typeof MODE_STATE_VERSION;
-	mode: Mode;
-	activePlanId?: string;
-}
-
-export interface PlanWorkItem {
-	/** Stable for the same normalized instruction, even if its numbered position changes. */
-	id: string;
-	order: number;
-	title: string;
-	/** Step execution is intentionally deferred; v1 reports the planned state only. */
-	status: "planned";
-}
-
-export interface PlanStateView {
-	id: string;
-	title: string;
-	status: PlanStatus;
-	path: string;
-	ownerSessionId: string;
-	ownedByCurrentSession: boolean;
-	blockedReason?: string;
-	steps: PlanWorkItem[];
-}
-
-export interface ArtifactReference {
-	path: string;
-	label: string;
-	kind: string;
-}
-
-export interface ModeStateSnapshot {
-	schemaVersion: typeof MODE_STATE_VERSION;
-	kind: "snapshot" | "changed";
-	sessionId: string;
-	cwd: string;
-	mode: Mode;
-	permissionProfile: PermissionProfile;
-	activePlan?: PlanStateView;
-	artifacts: ArtifactReference[];
-	updatedAt: number;
-}
-
-export function isMode(value: unknown): value is Mode {
-	return value === "ask" || value === "plan" || value === "build";
-}
+export { MODE_STATE_ENTRY_TYPE, MODE_STATE_EVENT, MODE_STATE_VERSION } from "../shared/contracts.ts";
+export { isMode } from "../shared/contracts.ts";
+export type {
+	ArtifactReference,
+	Mode,
+	ModeStateSnapshot,
+	PermissionProfile,
+	PersistedModeState,
+	PlanStateView,
+	PlanStatus,
+	PlanWorkItem,
+} from "../shared/contracts.ts";
 
 export function permissionProfileFor(mode: Mode): PermissionProfile {
 	return mode === "plan" ? "plan" : "build";
@@ -93,7 +65,7 @@ export function latestModeState(entries: readonly { customType?: string; data?: 
 	return found;
 }
 
-/** Extract the plan heading and ordered steps without treating fenced examples as instructions. */
+/** Extract the plan heading, Goal summary, and ordered steps without treating fenced examples as instructions. */
 function stableStepId(normalized: string, occurrence: number): string {
 	let hash = 0x811c9dc5;
 	for (let index = 0; index < normalized.length; index += 1) {
@@ -103,11 +75,29 @@ function stableStepId(normalized: string, occurrence: number): string {
 	return `step-${hash.toString(16).padStart(8, "0")}${occurrence > 1 ? `-${occurrence}` : ""}`;
 }
 
-export function summarizePlanMarkdown(markdown: string): { title?: string; steps: PlanWorkItem[] } {
+function cleanGoalSummary(lines: readonly string[]): string | undefined {
+	const normalized = lines
+		.map((line) => line.trim().replace(/^(?:[-*+]|\d+\.)\s+/, ""))
+		.filter(Boolean)
+		.join(" ")
+		.replace(/`([^`]+)`/g, "$1")
+		.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+		.replace(/[*_~]/g, "")
+		.replace(/[\x00-\x1f\x7f-\x9f]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!normalized) return undefined;
+	if (normalized.length <= 240) return normalized;
+	return `${normalized.slice(0, 239).trimEnd()}…`;
+}
+
+export function summarizePlanMarkdown(markdown: string): { title?: string; goalSummary?: string; steps: PlanWorkItem[] } {
 	const lines = markdown.split(/\r?\n/);
 	let inFence = false;
 	let title: string | undefined;
+	let inGoal = false;
 	let inSteps = false;
+	const goalLines: string[] = [];
 	const stepTitles: string[] = [];
 	for (const line of lines) {
 		if (/^\s*```/.test(line)) {
@@ -117,14 +107,12 @@ export function summarizePlanMarkdown(markdown: string): { title?: string; steps
 		if (inFence) continue;
 		const heading = /^\s*#\s+(.+?)\s*#*\s*$/.exec(line);
 		if (!title && heading) title = heading[1]!.trim();
-		if (/^\s*##\s+Implementation Steps\s*$/i.test(line)) {
-			inSteps = true;
+		if (/^\s*##\s+/.test(line)) {
+			inGoal = /^\s*##\s+Goal\s*#*\s*$/i.test(line);
+			inSteps = /^\s*##\s+Implementation Steps\s*#*\s*$/i.test(line);
 			continue;
 		}
-		if (inSteps && /^\s*##\s+/.test(line)) {
-			inSteps = false;
-			continue;
-		}
+		if (inGoal) goalLines.push(line);
 		if (inSteps) {
 			const item = /^\s*\d+\.\s+(.+?)\s*$/.exec(line);
 			if (item) stepTitles.push(item[1]!);
@@ -137,7 +125,8 @@ export function summarizePlanMarkdown(markdown: string): { title?: string; steps
 		occurrences.set(normalized, occurrence);
 		return { id: stableStepId(normalized, occurrence), order: index + 1, title: stepTitle.trim(), status: "planned" as const };
 	});
-	return { ...(title ? { title } : {}), steps };
+	const goalSummary = cleanGoalSummary(goalLines);
+	return { ...(title ? { title } : {}), ...(goalSummary ? { goalSummary } : {}), steps };
 }
 
 export function cleanPlanTitle(value: string): string {

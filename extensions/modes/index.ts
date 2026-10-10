@@ -79,6 +79,7 @@ function planView(ctx: ExtensionContext, id: string): { view: PlanStateView; mar
 				path: record.path,
 				ownerSessionId: record.ownerSessionId,
 				ownedByCurrentSession: record.ownerSessionId === sessionId(ctx),
+				...(summary.goalSummary ? { goalSummary: summary.goalSummary } : {}),
 				...(record.blockedReason ? { blockedReason: record.blockedReason } : {}),
 				steps: summary.steps,
 			},

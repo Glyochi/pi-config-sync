@@ -7,6 +7,8 @@
  * properties) for the same reason.
  */
 
+import { MODE_STATE_ENTRY_TYPE, MODE_STATE_EVENT } from "../shared/contracts.ts";
+
 export type Verdict = "allow" | "ask" | "deny";
 
 export type Action =
@@ -24,8 +26,8 @@ export type Mode = "plan" | "build" | "ask";
 export type RuleState = "allow" | "ask" | "deny";
 
 /** Durable snapshot written by the independent modes extension. */
-export const MODES_STATE_TYPE = "modes-state";
-export const MODES_STATE_EVENT = "modes:state.v1";
+export const MODES_STATE_TYPE = MODE_STATE_ENTRY_TYPE;
+export const MODES_STATE_EVENT = MODE_STATE_EVENT;
 
 /** Build and Ask share this policy profile; the mode label remains distinct for audit/UI. */
 export function permissionProfile(mode: Mode): "plan" | "build" {

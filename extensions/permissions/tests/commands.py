@@ -126,25 +126,11 @@ for index, (label, command, expected, forbidden) in enumerate(CASES):
         if not counters_line.startswith("counters: allow ") or " low · ask " not in counters_line or " low · deny " not in counters_line:
             failures.append(f'{label}: expected a counter line, got "{counters_line[:120]}"')
 
-# The footer indicator: one setStatus key, updated on every switch flip.
-if not indicator_updates:
-    failures.append("no setStatus request was emitted for the footer indicator")
-else:
-    # Other extensions share the footer status line, so judge only our own key.
-    mine = [text for key, text in indicator_updates if key == "permissions"]
-    if not mine:
-        failures.append("no setStatus request with the permissions key was emitted")
-    # `threshold 0.5` is the last thing that refreshes the footer.
-    if mine and mine[-1] != "jev off · yolo off · thr 0.50 · jev-1.13":
-        failures.append(
-            f'expected the final indicator to read "jev off · yolo off · thr 0.50 · jev-1.13", got "{mine[-1]}"'
-        )
-    if not any("jev on" in text for text in mine):
-        failures.append("no indicator update reported jev on")
-    if not any("yolo on" in text for text in mine):
-        failures.append("no indicator update reported yolo on")
-    if not any("thr 0.50" in text and "jev-1.13" in text for text in mine):
-        failures.append("no indicator update carried the threshold and the model id")
+# Permission state is now published as `permissions:state.v1` for the passive widget;
+# the producer must not put presentation text back on the shared footer status line.
+permission_status_text = [text for key, text in indicator_updates if key == "permissions" and text]
+if permission_status_text:
+    failures.append(f"permissions producer unexpectedly wrote footer text: {permission_status_text[-1]}")
 
 for note in collected:
     print(f"- {note}")

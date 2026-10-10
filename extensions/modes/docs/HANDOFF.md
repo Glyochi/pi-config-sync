@@ -18,7 +18,7 @@ Legacy Plan/Build files under `~/.pi/agent/plans/` and upstream `pi-plan-build` 
 | **Plan** | Read-only project research and author/revise a requested saved plan. Do not start implementation. | Plan | May edit only its attached open plan Markdown |
 | **Build** | Normal coding. If an open plan is attached, use it when the next user request asks to continue. Switching modes does not start a turn. | Build | Cannot edit `.pi/plans/*.md` |
 
-Commands are `/ask`, `/plan`, and `/build`. New sessions default to Build; mode selection persists in the session branch. Tab cycles Build → Plan → Ask **only when autocomplete is closed**. When autocomplete is open, Tab is passed to Pi and accepts the selected suggestion. This replaces the default closed-menu Tab file-completion trigger. The editor is a visually standard `CustomEditor` wrapper; if another extension owns the editor slot, this extension yields and the slash commands remain available. There is no Alt+M shortcut, custom composer chrome, mode footer indicator, or per-mode model selection.
+Commands are `/ask`, `/plan`, and `/build`. New sessions default to Build; mode selection persists in the session branch. Tab cycles Build → Plan → Ask **only when autocomplete is closed**. When autocomplete is open, Tab is passed to Pi and accepts the selected suggestion. This replaces the default closed-menu Tab file-completion trigger. The editor is a visually standard `CustomEditor` wrapper; if another extension owns the editor slot, this extension yields and the slash commands remain available. There is no Alt+M shortcut, custom composer chrome, mode footer indicator, or per-mode model selection. The separate `chatbox-status` extension renders mode and active-plan status in a widget above the editor.
 
 ## Ask behavior and artifacts
 
@@ -77,14 +77,14 @@ These are extension-level guards, **not an OS sandbox**. Pathless/private editor
 
 ## Public UI state contract
 
-`state.ts` defines the durable mode entry type `modes-state` and event `modes:state.v1`. The extension appends a version-1 session entry for mode/attached-plan changes, and emits a JSON-safe snapshot/change event at session startup/restoration and after mode, plan, or artifact changes. The snapshot includes:
+The shared [`../../shared/contracts.ts`](../../shared/contracts.ts) defines the durable mode entry type `modes-state`, event `modes:state.v1`, payload types, and runtime guards. The extension appends a version-1 session entry for mode/attached-plan changes, and emits a JSON-safe snapshot/change event at session startup/restoration and after mode, plan, or artifact changes. The snapshot includes:
 
 - `schemaVersion`, `kind`, `sessionId`, `cwd`, and `mode`;
 - `permissionProfile` (`plan` or `build`);
-- active plan ID/title/path/status/owner and stable work items, when attached;
+- active plan ID/title/path/status/owner, optional bounded plain-text `goalSummary` extracted only from `## Goal`, and stable work items;
 - `ask_tools/` artifact references.
 
-The permissions extension reads the durable entry and listens to the event so it sees live mode changes; a future UI should subscribe to the event rather than import private module state or parse transcript prose. Keep the event JSON-safe and append-only. If a future change must break a field's meaning, add a new event version rather than silently changing version 1. The existing question extension separately emits `rpiv:ask-user:prompt`.
+The permissions extension reads the durable entry and listens to the event so it sees live mode changes. The passive `chatbox-status` extension consumes the public mode and permission events; it does not import private producer state or parse transcript prose. Follow [`../../EXTENSION-CONVENTIONS.md`](../../EXTENSION-CONVENTIONS.md) for event versioning, snapshots, validation, and consumer behavior. Keep payloads JSON-safe and append-only. If a future change must break a field's meaning, add a new event version rather than silently changing version 1. The existing question extension separately emits `rpiv:ask-user:prompt`.
 
 ## Future subagent delegation (not implemented)
 

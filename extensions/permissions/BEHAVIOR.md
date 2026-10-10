@@ -109,22 +109,17 @@ run under YOLO and prompt without it.
 - Deletes of specific paths inside the working directories.
 - Reads: `read`, `grep`, `find`, `ls` never reach the classifier.
 
-## The footer indicator
+## The chatbox status widget
 
-The status line, below the stats line, reads `jev on · yolo off · thr 0.30 · jev-1.13`:
-the two switches, the confidence threshold in force, and the classifier id. Once Jev has
-classified something it gains ` · N reqs`, the number of classifications this session.
-Cache hits are not classifications, so they do not count.
+The permissions extension publishes a typed `permissions:state.v1` snapshot; the
+personal `chatbox-status` extension renders it above the editor. When the policy gate is
+enabled, the row shows `jev on · yolo off · thr 0.30 · jev-1.13` and adds ` · N reqs`
+once Jev has classified something. Cache hits are not classifications. When the overall
+gate is disabled, the widget shows only `permissions off` rather than suggesting the
+switches are active.
 
-Only `jev on` is coloured, in the warning colour, and only `yolo on`, in the error
-colour; nothing else is coloured and the line is never coloured as a whole. It reads
-`permissions off` when the gate is disabled, because reporting switch values for a gate
-that is not running would mislead.
-
-It is one line rather than inline with the cwd: a replaced footer cannot reproduce the
-`xp`, `(sub)`, routed-model and `(auto)` markers, which are not reachable from an
-extension. Other extensions share that line and it is sorted by key, so `git-sync` and
-other extension status entries appear alongside it.
+The producer no longer writes a footer status string. The event contract and cross-extension
+guidance live in `../shared/contracts.ts` and `../EXTENSION-CONVENTIONS.md`.
 
 ## Asking at runtime
 
