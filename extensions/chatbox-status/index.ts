@@ -1,17 +1,23 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import {
+	CHATBOX_TIMING_ENTRY_TYPE,
+	COMPOSER_STATUS_EVENT,
 	isModeStateSnapshot,
 	isPermissionsStateSnapshot,
+	isTimingEntryData,
 	MODE_STATE_EVENT,
 	PERMISSIONS_STATE_EVENT,
 	type ModeStateSnapshot,
 	type PermissionsStateSnapshot,
+	type StateEventKind,
+	type TimingEntryData,
 } from "../shared/contracts.ts";
+import { makeComposerStatusSnapshot } from "../shared/composer-status.ts";
 import {
-	currentModelTimeMs,
 	emptyModelTimeState,
 	finishModelGeneration,
+	formatDuration,
 	settleAgentRun,
 	startAgentRun,
 	startModelGeneration,
@@ -19,11 +25,8 @@ import {
 	type ModelTimeState,
 } from "./state.ts";
 
-const WIDGET_KEY = "chatbox-status";
-const TIMER_TICK_MS = 200;
 const PENDING_SESSION_LIMIT = 4;
 
-let context: ExtensionContext | undefined;
 let activeSessionId: string | undefined;
 let activeCwd: string | undefined;
 let modeSnapshot: ModeStateSnapshot | undefined;
@@ -32,7 +35,6 @@ const pendingModeSnapshots = new Map<string, ModeStateSnapshot>();
 const pendingPermissionsSnapshots = new Map<string, PermissionsStateSnapshot>();
 let timing: ModelTimeState = emptyModelTimeState();
 let pendingOutcome: AgentOutcome = "completed";
-let timer: ReturnType<typeof setInterval> | undefined;
 
 function sessionId(ctx: ExtensionContext): string {
 	return ctx.sessionManager.getSessionId() || "ephemeral";
@@ -48,111 +50,68 @@ function remember<T>(map: Map<string, T>, id: string, value: T): void {
 	}
 }
 
-function stopTimer(): void {
-	if (timer !== undefined) clearInterval(timer);
-	timer = undefined;
-}
-
 function clearSessionState(): void {
-	stopTimer();
 	modeSnapshot = undefined;
 	permissionsSnapshot = undefined;
 	timing = emptyModelTimeState();
 	pendingOutcome = "completed";
 }
 
-function formatDuration(milliseconds: number): string {
-	const safeMs = Math.max(0, milliseconds);
-	if (safeMs < 1_000) return `${Math.round(safeMs)} ms`;
-	if (safeMs < 60_000) return `${(safeMs / 1_000).toFixed(1)} s`;
-	const minutes = Math.floor(safeMs / 60_000);
-	const seconds = ((safeMs - minutes * 60_000) / 1_000).toFixed(1);
-	return `${minutes} m ${seconds} s`;
+function publishComposerStatus(pi: ExtensionAPI, kind: StateEventKind = "changed"): void {
+	if (!activeSessionId || activeCwd === undefined) return;
+	const snapshot = makeComposerStatusSnapshot({
+		sessionId: activeSessionId,
+		cwd: activeCwd,
+		mode: modeSnapshot,
+		permissions: permissionsSnapshot,
+		kind,
+		updatedAt: Date.now(),
+	});
+	try { pi.events.emit(COMPOSER_STATUS_EVENT, snapshot); }
+	catch { /* Presentation events must never affect permission decisions or agent execution. */ }
 }
 
-function modeLabel(snapshot: ModeStateSnapshot | undefined): string {
-	if (!snapshot) return "Mode: unavailable";
-	const mode = snapshot.mode[0]!.toUpperCase() + snapshot.mode.slice(1);
-	return `Mode: ${mode}`;
+function appendTimingEntry(pi: ExtensionAPI, data: TimingEntryData): void {
+	try { pi.appendEntry(CHATBOX_TIMING_ENTRY_TYPE, data); }
+	catch { /* Transcript decoration must never affect agent settlement. */ }
 }
 
-function planLine(snapshot: ModeStateSnapshot | undefined): string | undefined {
-	if (!snapshot || (snapshot.mode !== "plan" && snapshot.mode !== "build")) return undefined;
-	const plan = snapshot.activePlan;
-	if (!plan || plan.status !== "open" || !plan.ownedByCurrentSession) return undefined;
-	const title = plan.title.trim();
-	const goal = plan.goalSummary?.trim();
-	return `Plan: ${title}${goal ? ` — ${goal}` : ""}`;
-}
-
-function permissionsLine(
-	snapshot: PermissionsStateSnapshot | undefined,
-	colorize: (color: "warning" | "error", text: string) => string,
-): string {
-	if (!snapshot) return "Permissions: unavailable";
-	if (!snapshot.enabled) return "Permissions: off";
-	const jev = snapshot.jev ? colorize("warning", "jev on") : "jev off";
-	const yolo = snapshot.yolo ? colorize("error", "yolo on") : "yolo off";
-	const parts = [jev, yolo, `thr ${snapshot.threshold.toFixed(2)}`, snapshot.model];
-	if (snapshot.calls > 0) parts.push(`${snapshot.calls} reqs`);
-	return `Permissions: ${parts.join(" · ")}`;
-}
-
-function timingLine(now: number): string {
-	const current = currentModelTimeMs(timing, now);
-	if (current !== undefined) return `Model time: ${formatDuration(current)} · in progress`;
-	if (!timing.last) return "Model time: —";
-	return `Model time: ${formatDuration(timing.last.durationMs)} · ${timing.last.outcome}`;
-}
-
-function renderWidget(): void {
-	const ctx = context;
-	if (!ctx || ctx.mode !== "tui") return;
-	const lines = [modeLabel(modeSnapshot)];
-	const plan = planLine(modeSnapshot);
-	if (plan) lines.push(plan);
-	lines.push(timingLine(performance.now()));
-	try {
-		ctx.ui.setWidget(WIDGET_KEY, (_tui, theme) => {
-			const mode = theme.fg("accent", lines[0] ?? "Mode: unavailable");
-			const permissions = permissionsLine(permissionsSnapshot, (color, text) => theme.fg(color, text));
-			return new Text([mode, ...lines.slice(1), permissions].join("\n"), 0, 0);
-		}, { placement: "aboveEditor" });
-	} catch {
-		// The consumer is display-only; unsupported UI modes must not affect Pi.
-	}
-}
-
-function startTimer(): void {
-	if (timer !== undefined) return;
-	timer = setInterval(renderWidget, TIMER_TICK_MS);
-	timer.unref?.();
-}
-
-function handleModeSnapshot(payload: unknown): void {
+function handleModeSnapshot(pi: ExtensionAPI, payload: unknown): void {
 	if (!isModeStateSnapshot(payload)) return;
 	if (activeSessionId === payload.sessionId) {
 		if (activeCwd && activeCwd !== payload.cwd) return;
-		if (!modeSnapshot || payload.updatedAt >= modeSnapshot.updatedAt) modeSnapshot = payload;
-		renderWidget();
+		if (!modeSnapshot || payload.updatedAt >= modeSnapshot.updatedAt) {
+			modeSnapshot = payload;
+			publishComposerStatus(pi);
+		}
 		return;
 	}
 	remember(pendingModeSnapshots, payload.sessionId, payload);
 }
 
-function handlePermissionsSnapshot(payload: unknown): void {
+function handlePermissionsSnapshot(pi: ExtensionAPI, payload: unknown): void {
 	if (!isPermissionsStateSnapshot(payload)) return;
 	if (activeSessionId === payload.sessionId) {
-		if (!permissionsSnapshot || payload.updatedAt >= permissionsSnapshot.updatedAt) permissionsSnapshot = payload;
-		renderWidget();
+		if (!permissionsSnapshot || payload.updatedAt >= permissionsSnapshot.updatedAt) {
+			permissionsSnapshot = payload;
+			publishComposerStatus(pi);
+		}
 		return;
 	}
 	remember(pendingPermissionsSnapshots, payload.sessionId, payload);
 }
 
 export default function chatboxStatusExtension(pi: ExtensionAPI): void {
-	const unsubscribeMode = pi.events.on(MODE_STATE_EVENT, handleModeSnapshot);
-	const unsubscribePermissions = pi.events.on(PERMISSIONS_STATE_EVENT, handlePermissionsSnapshot);
+	const unsubscribeMode = pi.events.on(MODE_STATE_EVENT, (payload) => handleModeSnapshot(pi, payload));
+	const unsubscribePermissions = pi.events.on(PERMISSIONS_STATE_EVENT, (payload) => handlePermissionsSnapshot(pi, payload));
+
+	pi.registerEntryRenderer<TimingEntryData>(CHATBOX_TIMING_ENTRY_TYPE, (entry, _options, theme) => {
+		if (!isTimingEntryData(entry.data)) return undefined;
+		const data = entry.data;
+		const label = `Model time: ${formatDuration(data.durationMs)} · ${data.outcome}`;
+		const color = data.outcome === "completed" ? "dim" : data.outcome === "aborted" ? "warning" : "error";
+		return new Text(theme.fg(color, label), 0, 0);
+	});
 
 	pi.on("session_start", (_event, ctx) => {
 		const nextSessionId = sessionId(ctx);
@@ -165,57 +124,50 @@ export default function chatboxStatusExtension(pi: ExtensionAPI): void {
 			pendingModeSnapshots.clear();
 			pendingPermissionsSnapshots.clear();
 		} else {
+			activeCwd = ctx.cwd;
 			modeSnapshot = pendingModeSnapshots.get(nextSessionId) ?? modeSnapshot;
 			permissionsSnapshot = pendingPermissionsSnapshots.get(nextSessionId) ?? permissionsSnapshot;
 			pendingModeSnapshots.clear();
 			pendingPermissionsSnapshots.clear();
 		}
-		context = ctx;
-		if (ctx.mode === "tui") renderWidget();
+		publishComposerStatus(pi, "snapshot");
 	});
 
 	pi.on("agent_start", () => {
 		timing = startAgentRun(timing);
 		pendingOutcome = "completed";
-		renderWidget();
 	});
 
 	pi.on("message_start", (event) => {
 		if (event.message.role !== "assistant" || !timing.current) return;
 		timing = startModelGeneration(timing, performance.now());
-		if (context?.mode === "tui") startTimer();
-		renderWidget();
 	});
 
 	pi.on("message_end", (event) => {
 		if (event.message.role !== "assistant" || !timing.current) return;
 		timing = finishModelGeneration(timing, performance.now());
-		stopTimer();
-		renderWidget();
 	});
 
 	pi.on("agent_before_settle", (event) => {
 		pendingOutcome = event.outcome;
 		timing = finishModelGeneration(timing, performance.now());
-		stopTimer();
-		renderWidget();
 	});
 
 	pi.on("agent_settled", () => {
 		timing = settleAgentRun(timing, pendingOutcome, performance.now());
-		stopTimer();
-		renderWidget();
+		const result = timing.last;
+		if (result) {
+			appendTimingEntry(pi, {
+				schemaVersion: 1,
+				durationMs: result.durationMs,
+				outcome: result.outcome,
+			});
+		}
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
-		stopTimer();
-		if (ctx.mode === "tui") {
-			try { ctx.ui.setWidget(WIDGET_KEY, undefined); }
-			catch { /* The UI may already be torn down. */ }
-		}
 		unsubscribeMode();
 		unsubscribePermissions();
-		if (context === ctx) context = undefined;
 		activeSessionId = undefined;
 		activeCwd = undefined;
 		clearSessionState();

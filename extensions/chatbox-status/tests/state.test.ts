@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
 	currentModelTimeMs,
 	emptyModelTimeState,
+	formatDuration,
 	finishModelGeneration,
 	settleAgentRun,
 	startAgentRun,
@@ -36,4 +37,10 @@ test("starting another run keeps the previous settled result until replacement s
 	state = startAgentRun(state);
 	assert.deepEqual(state.last, previous);
 	assert.equal(currentModelTimeMs(state, 50), 0);
+});
+
+test("model time renders compactly across milliseconds, seconds, and minutes", () => {
+	assert.equal(formatDuration(89), "89 ms");
+	assert.equal(formatDuration(1_234), "1.2 s");
+	assert.equal(formatDuration(65_432), "1 m 5.4 s");
 });

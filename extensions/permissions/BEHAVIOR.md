@@ -109,14 +109,13 @@ run under YOLO and prompt without it.
 - Deletes of specific paths inside the working directories.
 - Reads: `read`, `grep`, `find`, `ls` never reach the classifier.
 
-## The chatbox status widget
+## Composer permission status
 
-The permissions extension publishes a typed `permissions:state.v1` snapshot; the
-personal `chatbox-status` extension renders it above the editor. When the policy gate is
-enabled, the row shows `jev on · yolo off · thr 0.30 · jev-1.13` and adds ` · N reqs`
-once Jev has classified something. Cache hits are not classifications. When the overall
-gate is disabled, the widget shows only `permissions off` rather than suggesting the
-switches are active.
+The permissions extension publishes a typed `permissions:state.v1` snapshot; the personal
+`chatbox-status` extension derives a compact view-model that the existing modes editor renders
+beside the Plan/Build label. When enabled, it shows `jev on · yolo off · thr 0.30`; when the
+overall gate is disabled, it shows only `permissions off`. Classifier model and request count
+remain in the producer-owned event and `/permissions status`, not in the compact composer row.
 
 The producer no longer writes a footer status string. The event contract and cross-extension
 guidance live in `../shared/contracts.ts` and `../EXTENSION-CONVENTIONS.md`.

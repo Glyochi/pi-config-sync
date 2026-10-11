@@ -27,7 +27,7 @@ This is guidance for extensions in `~/.pi/agent/extensions/`, not a required fra
 - Do not guess defaults for missing sources. Show an explicit unavailable/unknown state or omit the dependent row; do not represent missing data as `false` or “off.”
 - Keep UI formatting in the consumer. Producers publish semantic values, not ANSI strings or layout-specific text.
 - Guard terminal-only rendering with `ctx.mode === "tui"`; keep event/data behavior safe in RPC, JSON, and print modes.
-- Unsubscribe timers/listeners and remove widgets in `session_shutdown`; cleanup should be safe to call more than once.
+- Unsubscribe listeners and remove session-scoped UI ownership in `session_shutdown`; cleanup should be safe to call more than once.
 
 ## Current shared state contracts
 
@@ -35,5 +35,7 @@ The TypeScript definitions and runtime guards live in [`shared/contracts.ts`](./
 
 - `modes:state.v1` — mode, effective permission profile, active plan metadata, and artifact references. The optional `activePlan.goalSummary` contains bounded plain text extracted only from the plan’s `## Goal` section.
 - `permissions:state.v1` — whether the overall gate is enabled, Jev/YOLO switches, confidence threshold, Jev model ID, and session classification count.
+- `chatbox-status:composer.v1` — a bounded, session/cwd-scoped render view-model containing only the eligible plan summary and compact permission switches. The existing modes editor consumes it; do not install a competing editor or duplicate Pi's native model metadata row.
+- `chatbox-status-timing` — a versioned custom session entry containing one agent-run duration and outcome. Pi custom entries persist in the transcript but do not participate in LLM context.
 
-The modes extension persists its own branch-sensitive mode/plan attachment state in session entries and publishes live snapshots. The permissions extension owns its session-local switches/counters and publishes snapshots when they change. A UI consumer must not import either extension’s private implementation modules.
+The modes extension persists its own branch-sensitive mode/plan attachment state in session entries and publishes live snapshots. The permissions extension owns its session-local switches/counters and publishes snapshots when they change. `chatbox-status` derives presentation state and generation timing without owning policy. UI consumers must not import private producer implementation modules.

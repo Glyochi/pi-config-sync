@@ -1,6 +1,6 @@
 import path from "node:path";
 import { CustomEditor, getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Markdown, matchesKey } from "@earendil-works/pi-tui";
+import { Markdown, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { listLearningArtifacts } from "./artifacts.ts";
 import { PlanStore, isPlanId } from "./plan-store.ts";
@@ -13,6 +13,8 @@ import {
 	targetPathOf,
 } from "./path-guard.ts";
 import { blockedPlanShellReason, shouldBlockShellCommand } from "./shell-plan-guard.ts";
+import { COMPOSER_STATUS_EVENT, isComposerStatusSnapshot, type ComposerStatusSnapshot } from "../shared/contracts.ts";
+import { compactPermissionsLabel, layoutBorderText } from "../shared/composer-status.ts";
 import {
 	MODE_STATE_ENTRY_TYPE,
 	MODE_STATE_EVENT,
@@ -41,10 +43,40 @@ let activePlanId: string | undefined;
 let currentContext: ExtensionContext | undefined;
 let lastPersistedMode = "";
 let installedEditor: EditorFactory | undefined;
+let requestComposerRender: (() => void) | undefined;
+let composerStatus: ComposerStatusSnapshot | undefined;
+const pendingComposerStatus = new Map<string, ComposerStatusSnapshot>();
 let editorConflictNotified = false;
 
 function sessionId(ctx: ExtensionContext): string {
 	return ctx.sessionManager.getSessionId() || "ephemeral";
+}
+
+function handleComposerStatus(payload: unknown): void {
+	if (!isComposerStatusSnapshot(payload)) return;
+	const ctx = currentContext;
+	if (ctx && sessionId(ctx) === payload.sessionId && ctx.cwd === payload.cwd) {
+		if (!composerStatus || payload.updatedAt >= composerStatus.updatedAt) {
+			composerStatus = payload;
+			requestComposerRender?.();
+		}
+		return;
+	}
+	pendingComposerStatus.delete(payload.sessionId);
+	pendingComposerStatus.set(payload.sessionId, payload);
+	while (pendingComposerStatus.size > 4) {
+		const oldest = pendingComposerStatus.keys().next().value as string | undefined;
+		if (oldest === undefined) break;
+		pendingComposerStatus.delete(oldest);
+	}
+}
+
+function restoreComposerStatus(ctx: ExtensionContext): void {
+	const id = sessionId(ctx);
+	const pending = pendingComposerStatus.get(id);
+	if (pending) composerStatus = pending;
+	else if (composerStatus?.sessionId !== id || ctx.cwd !== composerStatus.cwd) composerStatus = undefined;
+	pendingComposerStatus.clear();
 }
 
 function planStore(ctx: ExtensionContext): PlanStore {
@@ -176,12 +208,51 @@ function installTabEditor(pi: ExtensionAPI, ctx: ExtensionContext): void {
 	if (current && current !== installedEditor) {
 		if (!editorConflictNotified) {
 			editorConflictNotified = true;
-			notify(ctx, "Another extension owns Pi's editor; Tab mode switching is unavailable here. Use /ask, /plan, or /build.", "warning");
+			notify(ctx, "Another extension owns Pi's editor; Tab mode switching and inline status are unavailable here. Use /ask, /plan, or /build.", "warning");
 		}
 		return;
 	}
-	if (installedEditor && current === installedEditor) return;
+	if (installedEditor && current === installedEditor) {
+		requestComposerRender?.();
+		return;
+	}
 	class ModeSwitchEditor extends CustomEditor {
+		protected override renderTopBorder(width: number, hiddenLineCount: number): string {
+			const summary = composerStatus?.planSummary;
+			if (!summary) return super.renderTopBorder(width, hiddenLineCount);
+			const overflow = hiddenLineCount > 0 ? ` ↑ ${hiddenLineCount} more ` : "";
+			const layout = layoutBorderText(
+				summary,
+				width,
+				"center",
+				visibleWidth,
+				(text, maxWidth, ellipsis) => truncateToWidth(text, maxWidth, ellipsis),
+				overflow,
+			);
+			const header = layout.label ? currentContext?.ui.theme.fg("accent", layout.label) ?? layout.label : "";
+			return `${this.borderColor(layout.leftBorder)}${header}${this.borderColor(layout.rightBorder + layout.overflowLabel)}`;
+		}
+
+		protected override renderBottomBorder(width: number, hiddenLineCount: number): string {
+			const theme = currentContext?.ui.theme;
+			const modeColor = selectedMode === "plan" ? "warning" : selectedMode === "build" ? "thinkingLow" : "accent";
+			const mode = theme ? theme.fg(modeColor, theme.bold(selectedMode)) : selectedMode;
+			const permission = compactPermissionsLabel(composerStatus?.permissions, (kind, text) =>
+				theme ? theme.fg(kind === "jev" ? "warning" : "error", text) : text,
+			);
+			const label = `${mode} · ${permission}`;
+			const overflow = hiddenLineCount > 0 ? ` ↓ ${hiddenLineCount} more ` : "";
+			const layout = layoutBorderText(
+				label,
+				width,
+				"left",
+				visibleWidth,
+				(text, maxWidth, ellipsis) => truncateToWidth(text, maxWidth, ellipsis),
+				overflow,
+			);
+			return `${this.borderColor(layout.leftBorder)}${layout.label}${this.borderColor(layout.rightBorder + layout.overflowLabel)}`;
+		}
+
 		override handleInput(data: string): void {
 			if (matchesKey(data, "tab") && shouldToggleModeOnTab(this.isShowingAutocomplete())) {
 				const liveContext = currentContext;
@@ -191,7 +262,10 @@ function installTabEditor(pi: ExtensionAPI, ctx: ExtensionContext): void {
 			super.handleInput(data);
 		}
 	}
-	const factory: EditorFactory = (tui, theme, keybindings) => new ModeSwitchEditor(tui, theme, keybindings);
+	const factory: EditorFactory = (tui, theme, keybindings) => {
+		requestComposerRender = () => tui.requestRender();
+		return new ModeSwitchEditor(tui, theme, keybindings);
+	};
 	installedEditor = factory;
 	ctx.ui.setEditorComponent(factory);
 }
@@ -286,6 +360,7 @@ function planOwnershipIsCurrent(ctx: ExtensionContext): boolean {
 function restore(ctx: ExtensionContext, pi: ExtensionAPI): void {
 	currentContext = ctx;
 	restoreSession(ctx);
+	restoreComposerStatus(ctx);
 	persistModeState(pi);
 	applyTools(pi, ctx);
 	installTabEditor(pi, ctx);
@@ -293,6 +368,7 @@ function restore(ctx: ExtensionContext, pi: ExtensionAPI): void {
 }
 
 export default function modesExtension(pi: ExtensionAPI): void {
+	const unsubscribeComposerStatus = pi.events.on(COMPOSER_STATUS_EVENT, handleComposerStatus);
 	const renderPlanInspection = (entry: { data?: { markdown?: string } }) =>
 		new Markdown(entry.data?.markdown ?? "Plan inspection unavailable", 0, 0, getMarkdownTheme());
 	pi.registerEntryRenderer<{ markdown: string }>(PLAN_INSPECTION_ENTRY_TYPE, renderPlanInspection);
@@ -402,6 +478,15 @@ export default function modesExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => restore(ctx, pi));
 	pi.on("session_tree", (_event, ctx) => restore(ctx, pi));
 	pi.on("session_compact", (_event, ctx) => { currentContext = ctx; publishState(pi, ctx, "snapshot"); });
+	pi.on("session_shutdown", (_event, ctx) => {
+		unsubscribeComposerStatus();
+		if (currentContext === ctx) {
+			currentContext = undefined;
+			composerStatus = undefined;
+			requestComposerRender = undefined;
+			installedEditor = undefined;
+		}
+	});
 
 	pi.on("context", (event) => {
 		const messages = event.messages.filter((message) => !(message.role === "custom" && message.customType === CONTEXT_TYPE));

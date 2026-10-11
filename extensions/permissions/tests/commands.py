@@ -126,7 +126,7 @@ for index, (label, command, expected, forbidden) in enumerate(CASES):
         if not counters_line.startswith("counters: allow ") or " low · ask " not in counters_line or " low · deny " not in counters_line:
             failures.append(f'{label}: expected a counter line, got "{counters_line[:120]}"')
 
-# Permission state is now published as `permissions:state.v1` for the passive widget;
+# Permission state is published as `permissions:state.v1` for the passive composer status;
 # the producer must not put presentation text back on the shared footer status line.
 permission_status_text = [text for key, text in indicator_updates if key == "permissions" and text]
 if permission_status_text:

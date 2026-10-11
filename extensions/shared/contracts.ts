@@ -12,6 +12,10 @@ export const MODE_STATE_VERSION = 1 as const;
 export const PERMISSIONS_STATE_EVENT = "permissions:state.v1";
 export const PERMISSIONS_STATE_VERSION = 1 as const;
 
+export const COMPOSER_STATUS_EVENT = "chatbox-status:composer.v1";
+export const COMPOSER_STATUS_VERSION = 1 as const;
+export const CHATBOX_TIMING_ENTRY_TYPE = "chatbox-status-timing";
+
 export type Mode = "ask" | "plan" | "build";
 export type PlanStatus = "open" | "completed" | "blocked";
 export type PermissionProfile = "plan" | "build";
@@ -81,6 +85,32 @@ export interface PermissionsStateSnapshot {
 	updatedAt: number;
 }
 
+/** Compact display state handed from chatbox-status to the existing modes composer. */
+export interface ComposerPermissionState {
+	enabled: boolean;
+	jev: boolean;
+	yolo: boolean;
+	threshold: number;
+}
+
+/** Public render-only snapshot consumed by the existing modes editor. */
+export interface ComposerStatusSnapshot {
+	schemaVersion: typeof COMPOSER_STATUS_VERSION;
+	kind: StateEventKind;
+	sessionId: string;
+	cwd: string;
+	planSummary?: string;
+	permissions?: ComposerPermissionState;
+	updatedAt: number;
+}
+
+/** Durable timing data rendered after an agent run; custom entries are not model context. */
+export interface TimingEntryData {
+	schemaVersion: 1;
+	durationMs: number;
+	outcome: "completed" | "aborted" | "error";
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -136,4 +166,25 @@ export function isPermissionsStateSnapshot(value: unknown): value is Permissions
 		typeof value.yolo === "boolean" && typeof value.threshold === "number" && Number.isFinite(value.threshold) &&
 		value.threshold >= 0 && value.threshold <= 1 && typeof value.model === "string" &&
 		Number.isInteger(value.calls) && (value.calls as number) >= 0 && Number.isFinite(value.updatedAt);
+}
+
+function isComposerPermissionState(value: unknown): value is ComposerPermissionState {
+	if (!isRecord(value)) return false;
+	return typeof value.enabled === "boolean" && typeof value.jev === "boolean" && typeof value.yolo === "boolean" &&
+		typeof value.threshold === "number" && Number.isFinite(value.threshold) && value.threshold >= 0 && value.threshold <= 1;
+}
+
+/** Runtime guard for the versioned composer view-model event. */
+export function isComposerStatusSnapshot(value: unknown): value is ComposerStatusSnapshot {
+	if (!isRecord(value)) return false;
+	return value.schemaVersion === COMPOSER_STATUS_VERSION && (value.kind === "snapshot" || value.kind === "changed") &&
+		isNonEmptyString(value.sessionId) && typeof value.cwd === "string" &&
+		(value.planSummary === undefined || typeof value.planSummary === "string" && value.planSummary.length <= 420) &&
+		(value.permissions === undefined || isComposerPermissionState(value.permissions)) && Number.isFinite(value.updatedAt);
+}
+
+export function isTimingEntryData(value: unknown): value is TimingEntryData {
+	if (!isRecord(value)) return false;
+	return value.schemaVersion === 1 && typeof value.durationMs === "number" && Number.isFinite(value.durationMs) &&
+		value.durationMs >= 0 && (value.outcome === "completed" || value.outcome === "aborted" || value.outcome === "error");
 }

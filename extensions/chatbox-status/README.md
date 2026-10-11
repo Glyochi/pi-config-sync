@@ -1,18 +1,17 @@
 # chatbox-status
 
-A personal Pi extension that renders a passive status widget above the editor. It consumes Pi lifecycle events and the public mode/permission state events; it does not register commands or tools and does not modify policy/session state.
+A personal, passive status extension. It consumes the public mode and permissions snapshots, publishes a compact composer view-model for the existing `modes` editor, and records per-run model-generation time as a transcript annotation. It does not register commands or tools or make policy decisions.
 
-The widget shows:
+## Display
 
-- Current Ask/Plan/Build mode.
-- The title and bounded `## Goal` summary for an open plan owned by this session while in Plan or Build mode.
-- The sum of assistant-generation intervals for the current/last agent run. It advances only during assistant message generation and freezes with the completed, aborted, or error outcome.
-- Permission switches, threshold, Jev model, and classification count, or `permissions off` when the overall policy gate is disabled.
+- The active plan title and bounded `## Goal` summary are centered in the composer's top border only when the plan is open, owned by this session, and the mode is Plan or Build.
+- The lower composer border shows the current mode and compact permissions state (`permissions off`, or Jev/YOLO/threshold). Pi's native model/provider/thinking row is not duplicated.
+- Each settled agent run gets a `Model time: … · outcome` custom session entry after its final assistant response. The entry is durable in the transcript and excluded from model context; its duration sums assistant-generation intervals and excludes tool execution and blocking user-prompt waits.
 
-Cross-extension payloads and runtime guards are defined in [`../shared/contracts.ts`](../shared/contracts.ts). See [`../EXTENSION-CONVENTIONS.md`](../EXTENSION-CONVENTIONS.md) for the event and consumer conventions.
+The `modes` extension owns the single custom editor and renders the versioned composer view-model published on `chatbox-status:composer.v1`. Cross-extension payloads and runtime guards are defined in [`../shared/contracts.ts`](../shared/contracts.ts); display helpers live in [`../shared/composer-status.ts`](../shared/composer-status.ts). See [`../EXTENSION-CONVENTIONS.md`](../EXTENSION-CONVENTIONS.md) for event and consumer conventions.
 
-Run the pure-state tests with:
+Run the pure-state and contract tests with:
 
 ```sh
-node --experimental-strip-types --test tests/*.test.ts
+node --experimental-strip-types --test ../shared/tests/*.test.ts tests/*.test.ts
 ```

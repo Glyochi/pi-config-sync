@@ -1,5 +1,14 @@
 export type AgentOutcome = "completed" | "aborted" | "error";
 
+export function formatDuration(milliseconds: number): string {
+	const safeMs = Math.max(0, milliseconds);
+	if (safeMs < 1_000) return `${Math.round(safeMs)} ms`;
+	if (safeMs < 60_000) return `${(safeMs / 1_000).toFixed(1)} s`;
+	const minutes = Math.floor(safeMs / 60_000);
+	const seconds = ((safeMs - minutes * 60_000) / 1_000).toFixed(1);
+	return `${minutes} m ${seconds} s`;
+}
+
 export interface ModelTimeResult {
 	durationMs: number;
 	outcome: AgentOutcome;
