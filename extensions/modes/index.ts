@@ -40,9 +40,11 @@ const FILE_MUTATION_TOOLS = new Set(["edit", "write", "replace", "insert", "undo
 
 let selectedMode: Mode = "build";
 let activePlanId: string | undefined;
+// Only the synchronous editor key handler needs a live context; shutdown removes the editor and clears this reference.
 let currentContext: ExtensionContext | undefined;
 let currentSessionId: string | undefined;
 let currentCwd: string | undefined;
+// Retain only the theme object, not the session-scoped context, for editor rendering.
 let currentTheme: ExtensionContext["ui"]["theme"] | undefined;
 let lastPersistedMode = "";
 let installedEditor: EditorFactory | undefined;
@@ -56,6 +58,7 @@ function sessionId(ctx: ExtensionContext): string {
 }
 
 function handleComposerStatus(payload: unknown): void {
+	// Event listeners use stored primitive session/project IDs, never a captured ExtensionContext.
 	if (!isComposerStatusSnapshot(payload)) return;
 	if (currentSessionId === payload.sessionId && currentCwd === payload.cwd) {
 		if (!composerStatus || payload.updatedAt >= composerStatus.updatedAt) {

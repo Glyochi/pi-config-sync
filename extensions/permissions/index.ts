@@ -122,6 +122,7 @@ interface ClassifyOutcome {
 }
 
 let state: State | undefined;
+// Primitive routing key for modes events that may arrive before this extension's session_start hook.
 let currentSessionId: string | undefined;
 let pendingModeEvent: { mode: Mode; sessionId?: string } | undefined;
 let stopForwardingWatcherImpl: (() => void) | undefined;
@@ -741,6 +742,7 @@ function statusLine(current: State): string {
 
 export default function permissionsExtension(pi: ExtensionAPI): void {
 	const handleModeStateEvent = (payload: unknown) => {
+		// This long-lived listener deliberately does not read sessionManager from a cached context.
 		const mode = modeFromEntryData(payload);
 		if (!mode) return;
 		const rawSessionId = payload && typeof payload === "object" ? (payload as { sessionId?: unknown }).sessionId : undefined;
