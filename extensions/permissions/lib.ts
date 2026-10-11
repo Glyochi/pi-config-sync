@@ -1188,6 +1188,17 @@ function asRuleMap(value: unknown, fallback: Record<string, RuleState>): Record<
 
 // --- modes ----------------------------------------------------------------
 
+/** Route a cross-extension mode event using primitive IDs, never a stored ExtensionContext. */
+export function modeEventDisposition(
+	eventSessionId: string | undefined,
+	activeSessionId: string | undefined,
+	hasState: boolean,
+): "apply" | "defer" | "ignore" {
+	if (!hasState || activeSessionId === undefined) return "defer";
+	if (eventSessionId !== undefined && eventSessionId !== activeSessionId) return "ignore";
+	return "apply";
+}
+
 /** Read the versioned mode value from a modes session entry or event payload. */
 export function modeFromEntryData(data: unknown): Mode | undefined {
 	if (!isRecord(data)) return undefined;

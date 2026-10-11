@@ -41,6 +41,9 @@ const FILE_MUTATION_TOOLS = new Set(["edit", "write", "replace", "insert", "undo
 let selectedMode: Mode = "build";
 let activePlanId: string | undefined;
 let currentContext: ExtensionContext | undefined;
+let currentSessionId: string | undefined;
+let currentCwd: string | undefined;
+let currentTheme: ExtensionContext["ui"]["theme"] | undefined;
 let lastPersistedMode = "";
 let installedEditor: EditorFactory | undefined;
 let requestComposerRender: (() => void) | undefined;
@@ -54,8 +57,7 @@ function sessionId(ctx: ExtensionContext): string {
 
 function handleComposerStatus(payload: unknown): void {
 	if (!isComposerStatusSnapshot(payload)) return;
-	const ctx = currentContext;
-	if (ctx && sessionId(ctx) === payload.sessionId && ctx.cwd === payload.cwd) {
+	if (currentSessionId === payload.sessionId && currentCwd === payload.cwd) {
 		if (!composerStatus || payload.updatedAt >= composerStatus.updatedAt) {
 			composerStatus = payload;
 			requestComposerRender?.();
@@ -77,6 +79,13 @@ function restoreComposerStatus(ctx: ExtensionContext): void {
 	if (pending) composerStatus = pending;
 	else if (composerStatus?.sessionId !== id || ctx.cwd !== composerStatus.cwd) composerStatus = undefined;
 	pendingComposerStatus.clear();
+}
+
+function activateContext(ctx: ExtensionContext): void {
+	currentContext = ctx;
+	currentSessionId = sessionId(ctx);
+	currentCwd = ctx.cwd;
+	currentTheme = ctx.ui.theme;
 }
 
 function planStore(ctx: ExtensionContext): PlanStore {
@@ -136,8 +145,7 @@ function stateSnapshot(ctx: ExtensionContext, kind: ModeStateSnapshot["kind"]): 
 	});
 }
 
-function publishState(pi: ExtensionAPI, ctx = currentContext, kind: ModeStateSnapshot["kind"] = "changed"): void {
-	if (!ctx) return;
+function publishState(pi: ExtensionAPI, ctx: ExtensionContext, kind: ModeStateSnapshot["kind"] = "changed"): void {
 	let snapshot: ModeStateSnapshot;
 	try { snapshot = stateSnapshot(ctx, kind); }
 	catch { return; }
@@ -167,7 +175,7 @@ function activeOwnedPlan(ctx: ExtensionContext) {
 	return record;
 }
 
-function applyTools(pi: ExtensionAPI, ctx = currentContext): void {
+function applyTools(pi: ExtensionAPI, ctx: ExtensionContext): void {
 	const active = pi.getActiveTools();
 	const base = active.filter((name) => !MANAGED_TOOLS.has(name));
 	let plan: ReturnType<PlanStore["get"]>;
@@ -188,6 +196,7 @@ function notify(ctx: ExtensionContext, message: string, level: "info" | "warning
 }
 
 async function setMode(pi: ExtensionAPI, mode: Mode, ctx: ExtensionContext, announceSelection = true): Promise<boolean> {
+	activateContext(ctx);
 	if (!ctx.isIdle()) {
 		notify(ctx, "Wait for the agent to finish before switching modes.", "warning");
 		return false;
@@ -228,7 +237,7 @@ function installTabEditor(pi: ExtensionAPI, ctx: ExtensionContext): void {
 				(text, maxWidth, ellipsis) => truncateToWidth(text, maxWidth, ellipsis),
 				overflow,
 			);
-			const theme = currentContext?.ui.theme;
+			const theme = currentTheme;
 			const colorize = (text: string) => {
 				if (!text) return "";
 				return theme ? theme.fg(modeColorToken(selectedMode), text) : this.borderColor(text);
@@ -237,7 +246,7 @@ function installTabEditor(pi: ExtensionAPI, ctx: ExtensionContext): void {
 		}
 
 		protected override renderBottomBorder(width: number, hiddenLineCount: number): string {
-			const theme = currentContext?.ui.theme;
+			const theme = currentTheme;
 			const mode = theme ? theme.fg(modeColorToken(selectedMode), theme.bold(selectedMode)) : selectedMode;
 			const permission = compactPermissionsLabel(composerStatus?.permissions, (kind, text) =>
 				theme ? theme.fg(kind === "jev" ? "warning" : "error", text) : text,
@@ -367,7 +376,7 @@ function planOwnershipIsCurrent(ctx: ExtensionContext): boolean {
 }
 
 function restore(ctx: ExtensionContext, pi: ExtensionAPI): void {
-	currentContext = ctx;
+	activateContext(ctx);
 	restoreSession(ctx);
 	restoreComposerStatus(ctx);
 	persistModeState(pi);
@@ -486,21 +495,11 @@ export default function modesExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, ctx) => restore(ctx, pi));
 	pi.on("session_tree", (_event, ctx) => restore(ctx, pi));
-	pi.on("session_compact", (_event, ctx) => { currentContext = ctx; publishState(pi, ctx, "snapshot"); });
-	pi.on("session_shutdown", (_event, ctx) => {
-		unsubscribeComposerStatus();
-		if (currentContext === ctx) {
-			currentContext = undefined;
-			composerStatus = undefined;
-			requestComposerRender = undefined;
-			installedEditor = undefined;
-		}
-	});
+	pi.on("session_compact", (_event, ctx) => { activateContext(ctx); publishState(pi, ctx, "snapshot"); });
 
-	pi.on("context", (event) => {
+	pi.on("context", (event, ctx) => {
+		activateContext(ctx);
 		const messages = event.messages.filter((message) => !(message.role === "custom" && message.customType === CONTEXT_TYPE));
-		const ctx = currentContext;
-		if (!ctx) return { messages };
 		let plan = activePlanId ? planView(ctx, activePlanId) : undefined;
 		const stale = !!plan && plan.view.status !== "completed" && !plan.view.ownedByCurrentSession;
 		if (plan?.view.status === "completed") plan = undefined;
@@ -560,9 +559,16 @@ export default function modesExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
+		unsubscribeComposerStatus();
 		if (installedEditor && ctx.ui.getEditorComponent() === installedEditor) ctx.ui.setEditorComponent(undefined);
 		installedEditor = undefined;
 		editorConflictNotified = false;
 		currentContext = undefined;
+		currentSessionId = undefined;
+		currentCwd = undefined;
+		currentTheme = undefined;
+		composerStatus = undefined;
+		pendingComposerStatus.clear();
+		requestComposerRender = undefined;
 	});
 }

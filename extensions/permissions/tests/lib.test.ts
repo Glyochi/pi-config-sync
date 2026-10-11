@@ -46,6 +46,7 @@ import {
 	isSubagentEnv,
 	needsJudgement,
 	modeFromEntries,
+	modeEventDisposition,
 	parseForwardedResponse,
 	parseThreshold,
 	permissionArgumentCompletion,
@@ -871,6 +872,10 @@ eq("legacy Plan/Build entries are not migrated", modeFromEntries([{ customType: 
 eq("a malformed payload yields nothing", modeFromEntryData({ version: 1, mode: "nope" }), undefined);
 eq("event snapshots use the same versioned mode contract", modeFromEntryData({ schemaVersion: 1, mode: "ask" }), "ask");
 eq("an unsupported state version yields nothing", modeFromEntryData({ version: 2, mode: "ask" }), undefined);
+eq("mode events defer until session state is ready", modeEventDisposition("session-a", undefined, false), "defer");
+eq("mode events apply when the primitive session ID matches", modeEventDisposition("session-a", "session-a", true), "apply");
+eq("mode events without IDs apply to the active session for compatibility", modeEventDisposition(undefined, "session-a", true), "apply");
+eq("events for a different session are ignored", modeEventDisposition("session-b", "session-a", true), "ignore");
 eq("the Plan flag wins at startup", resolveMode({ planFlag: true }), "plan");
 eq("the Ask flag is recognized", resolveMode({ askFlag: true }), "ask");
 eq("the Build flag wins at startup", resolveMode({ buildFlag: true, persisted: "plan" }), "build");

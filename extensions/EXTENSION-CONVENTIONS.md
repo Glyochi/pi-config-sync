@@ -9,6 +9,14 @@ This is guidance for extensions in `~/.pi/agent/extensions/`, not a required fra
 - The extension that owns a value is its source of truth. Consumers observe it; they should not change or re-create its policy.
 - Keep display extensions policy-read-only: subscribe to data and maintain derived presentation state; do not register tools or change producer-owned policy. A deliberately persistent display annotation may append a custom session entry, but document it and keep it out of model context.
 
+## Context lifetimes and session replacement
+
+- Treat `ExtensionContext` and `ExtensionCommandContext` as session-scoped capabilities, not durable state. Calls such as `ctx.newSession()`, `ctx.fork()`, `ctx.switchSession()`, and reload can invalidate the old context (and captured extension API); stop using them after replacement begins.
+- Do not retain a context in a module-global for a long-lived `pi.events` listener, timer, or async callback. Capture only plain values such as `sessionId` and `cwd`; event listeners should scope by those values and defer session-bound reads/UI work to a lifecycle hook with its fresh `ctx`.
+- Do not assume extension hook order across extensions. A `session_start` handler may publish an event before another extension's `session_start` handler has run. Queue or ignore by session ID and reconcile from durable state using the fresh context; never inspect a cached context to determine which session an event belongs to.
+- Use the fresh `ctx` passed to each lifecycle/command/tool hook. Components that need an active UI context must be invalidated on `session_shutdown` and refreshed on `session_start`/restoration; keep them out of global event handlers.
+- Stop timers, watchers, and event subscriptions idempotently on `session_shutdown`, including work that may still be awaiting an async operation.
+
 ## Public event contracts
 
 - Treat every `pi.events` payload as `unknown` at the boundary. TypeScript types help producers and consumers agree, but do not validate runtime data; use a type guard before consuming it.

@@ -10,7 +10,7 @@
  * Pure logic lives in ./lib.ts so plain node can test it without pi's module alias.
  */
 
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -45,6 +45,7 @@ import {
 	FORWARDING_AGENT_DIR_ENV_KEY,
 	isMcpTool,
 	isShellTool,
+	modeEventDisposition,
 	modeFromEntries,
 	modeFromEntryData,
 	normalizeConfig,
@@ -121,8 +122,9 @@ interface ClassifyOutcome {
 }
 
 let state: State | undefined;
-let currentContext: ExtensionContext | undefined;
+let currentSessionId: string | undefined;
 let pendingModeEvent: { mode: Mode; sessionId?: string } | undefined;
+let stopForwardingWatcherImpl: (() => void) | undefined;
 
 // --- paths and config -----------------------------------------------------
 
@@ -229,6 +231,10 @@ function readMode(ctx: ExtensionContext): Mode {
 
 // --- state ----------------------------------------------------------------
 
+function sessionId(ctx: ExtensionContext): string {
+	return ctx.sessionManager.getSessionId() || "ephemeral";
+}
+
 function resetState(ctx: ExtensionContext, pi: ExtensionAPI): State {
 	const loaded = loadConfig();
 	// The session cwd counts as a working directory, so a relative target like `build`
@@ -262,7 +268,7 @@ function resetState(ctx: ExtensionContext, pi: ExtensionAPI): State {
 }
 
 function ensureState(ctx: ExtensionContext, pi: ExtensionAPI): State {
-	currentContext = ctx;
+	currentSessionId = sessionId(ctx);
 	return state ?? resetState(ctx, pi);
 }
 
@@ -446,17 +452,23 @@ async function forwardApproval(toolCallId: string, title: string, message: strin
 }
 
 /** Parent side: scan for forwarded requests, prompt, and answer. */
+function stopForwardingWatcher(): void {
+	stopForwardingWatcherImpl?.();
+	stopForwardingWatcherImpl = undefined;
+}
+
 function startForwardingWatcher(ctx: ExtensionContext): void {
+	stopForwardingWatcher();
 	if (!ctx.hasUI || isSubagentEnv(process.env)) return;
-	const sessionId = ctx.sessionManager.getSessionId();
-	const { requests, responses } = forwardingPaths(forwardingRoot(), sessionId);
+	const watcherSessionId = sessionId(ctx);
+	const { requests, responses } = forwardingPaths(forwardingRoot(), watcherSessionId);
+	let active = true;
 	let busy = false;
 	const timer = setInterval(() => {
-		if (busy) return;
+		if (!active || busy) return;
 		busy = true;
 		void (async () => {
 			try {
-				const { readdirSync } = await import("node:fs");
 				let names: string[] = [];
 				try {
 					names = readdirSync(requests).filter((name) => name.endsWith(".json"));
@@ -464,6 +476,7 @@ function startForwardingWatcher(ctx: ExtensionContext): void {
 					return;
 				}
 				for (const name of names) {
+					if (!active) return;
 					let parsed: { id?: unknown; message?: unknown } = {};
 					try {
 						parsed = JSON.parse(readFileSync(join(requests, name), "utf8")) as { id?: unknown; message?: unknown };
@@ -473,6 +486,7 @@ function startForwardingWatcher(ctx: ExtensionContext): void {
 					const id = typeof parsed.id === "string" ? parsed.id : undefined;
 					if (id === undefined) continue;
 					const approved = await ctx.ui.confirm("Subagent permission request", String(parsed.message ?? ""));
+					if (!active) return;
 					mkdirSync(responses, { recursive: true });
 					appendFileSync(join(responses, `${id}.json`), JSON.stringify({ id, approved, respondedAt: Date.now() }), "utf8");
 					audit({ tool: "forwarded", decision: approved ? "allow" : "block", source: "forwarding" });
@@ -485,6 +499,10 @@ function startForwardingWatcher(ctx: ExtensionContext): void {
 		})();
 	}, FORWARD_POLL_MS);
 	timer.unref?.();
+	stopForwardingWatcherImpl = () => {
+		active = false;
+		clearInterval(timer);
+	};
 }
 
 // --- the gate -------------------------------------------------------------
@@ -725,31 +743,39 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	const handleModeStateEvent = (payload: unknown) => {
 		const mode = modeFromEntryData(payload);
 		if (!mode) return;
-		const session = payload && typeof payload === "object" ? (payload as { sessionId?: unknown }).sessionId : undefined;
-		if (currentContext && typeof session === "string" && session !== currentContext.sessionManager.getSessionId()) return;
-		if (!state) {
-			pendingModeEvent = { mode, ...(typeof session === "string" ? { sessionId: session } : {}) };
+		const rawSessionId = payload && typeof payload === "object" ? (payload as { sessionId?: unknown }).sessionId : undefined;
+		const eventSessionId = typeof rawSessionId === "string" ? rawSessionId : undefined;
+		const disposition = modeEventDisposition(eventSessionId, currentSessionId, state !== undefined);
+		if (disposition === "ignore") return;
+		if (disposition === "defer") {
+			pendingModeEvent = { mode, ...(eventSessionId ? { sessionId: eventSessionId } : {}) };
 			return;
 		}
-		state.mode = mode;
-		if (currentContext) state.leafId = currentContext.sessionManager.getLeafId();
+		if (state) state.mode = mode;
 	};
-	pi.events.on(MODES_STATE_EVENT, handleModeStateEvent);
+	const unsubscribeModeEvent = pi.events.on(MODES_STATE_EVENT, handleModeStateEvent);
 
 	pi.on("session_start", (_event, ctx) => {
-		currentContext = ctx;
+		currentSessionId = sessionId(ctx);
 		try { ctx.ui.setStatus("permissions", undefined); }
 		catch { /* Remove a stale indicator from a previously loaded extension version. */ }
 		const current = resetState(ctx, pi);
-		if (pendingModeEvent && (!pendingModeEvent.sessionId || pendingModeEvent.sessionId === ctx.sessionManager.getSessionId())) current.mode = pendingModeEvent.mode;
+		if (pendingModeEvent && (!pendingModeEvent.sessionId || pendingModeEvent.sessionId === currentSessionId)) current.mode = pendingModeEvent.mode;
 		pendingModeEvent = undefined;
 		warnConfigOnce(ctx, current);
 		startForwardingWatcher(ctx);
 		installArgumentCompletions(ctx);
 	});
 
+	pi.on("session_shutdown", () => {
+		stopForwardingWatcher();
+		unsubscribeModeEvent();
+		currentSessionId = undefined;
+		pendingModeEvent = undefined;
+		state = undefined;
+	});
+
 	pi.on("before_agent_start", (event, ctx) => {
-		currentContext = ctx;
 		const current = ensureState(ctx, pi);
 		current.mode = readMode(ctx);
 		current.leafId = ctx.sessionManager.getLeafId();
