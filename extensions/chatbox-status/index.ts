@@ -8,12 +8,13 @@ import {
 	isTimingEntryData,
 	MODE_STATE_EVENT,
 	PERMISSIONS_STATE_EVENT,
+	type Mode,
 	type ModeStateSnapshot,
 	type PermissionsStateSnapshot,
 	type StateEventKind,
 	type TimingEntryData,
 } from "../shared/contracts.ts";
-import { makeComposerStatusSnapshot } from "../shared/composer-status.ts";
+import { makeComposerStatusSnapshot, modeColorToken } from "../shared/composer-status.ts";
 import {
 	emptyModelTimeState,
 	finishModelGeneration,
@@ -35,6 +36,7 @@ const pendingModeSnapshots = new Map<string, ModeStateSnapshot>();
 const pendingPermissionsSnapshots = new Map<string, PermissionsStateSnapshot>();
 let timing: ModelTimeState = emptyModelTimeState();
 let pendingOutcome: AgentOutcome = "completed";
+let runMode: Mode | undefined;
 
 function sessionId(ctx: ExtensionContext): string {
 	return ctx.sessionManager.getSessionId() || "ephemeral";
@@ -55,6 +57,7 @@ function clearSessionState(): void {
 	permissionsSnapshot = undefined;
 	timing = emptyModelTimeState();
 	pendingOutcome = "completed";
+	runMode = undefined;
 }
 
 function publishComposerStatus(pi: ExtensionAPI, kind: StateEventKind = "changed"): void {
@@ -110,7 +113,8 @@ export default function chatboxStatusExtension(pi: ExtensionAPI): void {
 		const data = entry.data;
 		const label = `Model time: ${formatDuration(data.durationMs)} · ${data.outcome}`;
 		const color = data.outcome === "completed" ? "dim" : data.outcome === "aborted" ? "warning" : "error";
-		return new Text(theme.fg(color, label), 0, 0);
+		const modeLabel = data.mode ? ` · ${theme.fg(modeColorToken(data.mode), data.mode)}` : "";
+		return new Text(`${theme.fg(color, label)}${modeLabel}`, 0, 0);
 	});
 
 	pi.on("session_start", (_event, ctx) => {
@@ -136,6 +140,7 @@ export default function chatboxStatusExtension(pi: ExtensionAPI): void {
 	pi.on("agent_start", () => {
 		timing = startAgentRun(timing);
 		pendingOutcome = "completed";
+		runMode = modeSnapshot?.mode;
 	});
 
 	pi.on("message_start", (event) => {
@@ -156,11 +161,14 @@ export default function chatboxStatusExtension(pi: ExtensionAPI): void {
 	pi.on("agent_settled", () => {
 		timing = settleAgentRun(timing, pendingOutcome, performance.now());
 		const result = timing.last;
+		const mode = runMode;
+		runMode = undefined;
 		if (result) {
 			appendTimingEntry(pi, {
 				schemaVersion: 1,
 				durationMs: result.durationMs,
 				outcome: result.outcome,
+				...(mode ? { mode } : {}),
 			});
 		}
 	});

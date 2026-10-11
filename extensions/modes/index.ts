@@ -14,14 +14,13 @@ import {
 } from "./path-guard.ts";
 import { blockedPlanShellReason, shouldBlockShellCommand } from "./shell-plan-guard.ts";
 import { COMPOSER_STATUS_EVENT, isComposerStatusSnapshot, type ComposerStatusSnapshot } from "../shared/contracts.ts";
-import { compactPermissionsLabel, layoutBorderText } from "../shared/composer-status.ts";
+import { compactPermissionsLabel, layoutBorderText, modeColorToken } from "../shared/composer-status.ts";
 import {
 	MODE_STATE_ENTRY_TYPE,
 	MODE_STATE_EVENT,
 	MODE_STATE_VERSION,
 	latestModeState,
 	makeModeStateSnapshot,
-	modeColorToken,
 	nextMode,
 	summarizePlanMarkdown,
 	shouldToggleModeOnTab,
@@ -188,7 +187,7 @@ function notify(ctx: ExtensionContext, message: string, level: "info" | "warning
 	catch { /* No UI is available; command/tool results still carry the message. */ }
 }
 
-async function setMode(pi: ExtensionAPI, mode: Mode, ctx: ExtensionContext): Promise<boolean> {
+async function setMode(pi: ExtensionAPI, mode: Mode, ctx: ExtensionContext, announceSelection = true): Promise<boolean> {
 	if (!ctx.isIdle()) {
 		notify(ctx, "Wait for the agent to finish before switching modes.", "warning");
 		return false;
@@ -199,7 +198,7 @@ async function setMode(pi: ExtensionAPI, mode: Mode, ctx: ExtensionContext): Pro
 	applyTools(pi, ctx);
 	installTabEditor(pi, ctx);
 	publishState(pi, ctx);
-	notify(ctx, `${mode[0]!.toUpperCase()}${mode.slice(1)} mode selected.`, "info");
+	if (announceSelection) notify(ctx, `${mode[0]!.toUpperCase()}${mode.slice(1)} mode selected.`, "info");
 	return true;
 }
 
@@ -261,9 +260,11 @@ function installTabEditor(pi: ExtensionAPI, ctx: ExtensionContext): void {
 				const autocompleteIsOpen = this.isShowingAutocomplete();
 				if (shouldToggleModeOnTab(selectedMode, autocompleteIsOpen)) {
 					const liveContext = currentContext;
-					if (liveContext) void setMode(pi, nextMode(selectedMode), liveContext);
+					if (liveContext) void setMode(pi, nextMode(selectedMode), liveContext, false);
 				} else if (autocompleteIsOpen) {
 					super.handleInput(data);
+				} else if (selectedMode === "ask" && currentContext) {
+					notify(currentContext, "Tab switches only between Plan and Build. Use /plan or /build to leave Ask mode.", "info");
 				}
 				return;
 			}

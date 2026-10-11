@@ -110,6 +110,8 @@ export interface TimingEntryData {
 	schemaVersion: 1;
 	durationMs: number;
 	outcome: "completed" | "aborted" | "error";
+	/** Optional for compatibility with existing v1 entries created before mode was recorded. */
+	mode?: Mode;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -192,5 +194,6 @@ export function isComposerStatusSnapshot(value: unknown): value is ComposerStatu
 export function isTimingEntryData(value: unknown): value is TimingEntryData {
 	if (!isRecord(value)) return false;
 	return value.schemaVersion === 1 && typeof value.durationMs === "number" && Number.isFinite(value.durationMs) &&
-		value.durationMs >= 0 && (value.outcome === "completed" || value.outcome === "aborted" || value.outcome === "error");
+		value.durationMs >= 0 && (value.outcome === "completed" || value.outcome === "aborted" || value.outcome === "error") &&
+		(value.mode === undefined || isMode(value.mode));
 }

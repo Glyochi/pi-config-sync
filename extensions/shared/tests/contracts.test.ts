@@ -82,8 +82,10 @@ test("composer snapshots validate session-scoped display data", () => {
 	assert.equal(isComposerStatusSnapshot({ ...snapshot, sessionId: "" }), false);
 });
 
-test("timing entry data validates only finite non-negative durations and known outcomes", () => {
+test("timing entry data validates duration, outcome, and optional mode", () => {
 	assert.equal(isTimingEntryData({ schemaVersion: 1, durationMs: 123.4, outcome: "completed" }), true);
+	assert.equal(isTimingEntryData({ schemaVersion: 1, durationMs: 123.4, outcome: "completed", mode: "ask" }), true);
+	assert.equal(isTimingEntryData({ schemaVersion: 1, durationMs: 123.4, outcome: "completed", mode: "other" }), false);
 	assert.equal(isTimingEntryData({ schemaVersion: 1, durationMs: -1, outcome: "completed" }), false);
 	assert.equal(isTimingEntryData({ schemaVersion: 1, durationMs: Number.NaN, outcome: "error" }), false);
 	assert.equal(isTimingEntryData({ schemaVersion: 1, durationMs: 10, outcome: "unknown" }), false);

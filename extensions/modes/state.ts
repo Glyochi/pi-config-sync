@@ -38,10 +38,6 @@ export function shouldToggleModeOnTab(mode: Mode, autocompleteIsOpen: boolean): 
 	return mode !== "ask" && !autocompleteIsOpen;
 }
 
-export function modeColorToken(mode: Mode): "warning" | "thinkingLow" | "accent" {
-	return mode === "plan" ? "warning" : mode === "build" ? "thinkingLow" : "accent";
-}
-
 export function makeModeStateSnapshot(input: Omit<ModeStateSnapshot, "schemaVersion" | "permissionProfile">): ModeStateSnapshot {
 	return { ...input, schemaVersion: MODE_STATE_VERSION, permissionProfile: permissionProfileFor(input.mode) };
 }

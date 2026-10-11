@@ -2,6 +2,7 @@ import {
 	COMPOSER_PLAN_SUMMARY_MAX_CHARS,
 	type ComposerPermissionState,
 	type ComposerStatusSnapshot,
+	type Mode,
 	type ModeStateSnapshot,
 	type PermissionsStateSnapshot,
 	type StateEventKind,
@@ -28,6 +29,10 @@ export function planSummaryForComposer(snapshot: ModeStateSnapshot | undefined):
 	const goal = plainInline(plan.goalSummary ?? "");
 	const summary = [title, goal].filter(Boolean).join(" — ");
 	return summary ? boundedText(summary, COMPOSER_PLAN_SUMMARY_MAX_CHARS) : undefined;
+}
+
+export function modeColorToken(mode: Mode): "warning" | "thinkingLow" | "accent" {
+	return mode === "plan" ? "warning" : mode === "build" ? "thinkingLow" : "accent";
 }
 
 export function compactPermissionState(snapshot: PermissionsStateSnapshot | undefined): ComposerPermissionState | undefined {

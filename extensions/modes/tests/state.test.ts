@@ -7,7 +7,6 @@ import {
 	latestModeState,
 	makeModeStateSnapshot,
 	permissionProfileFor,
-	modeColorToken,
 	nextMode,
 	shouldToggleModeOnTab,
 	summarizePlanMarkdown,
@@ -43,6 +42,7 @@ test("Tab toggles only between Plan and Build and stays disabled in Ask", () => 
 	assert.equal(shouldToggleModeOnTab("build", false), true);
 	assert.equal(shouldToggleModeOnTab("plan", false), true);
 	assert.equal(shouldToggleModeOnTab("ask", false), false);
+	assert.equal(shouldToggleModeOnTab("ask", true), false);
 	assert.equal(shouldToggleModeOnTab("build", true), false);
 	assert.equal(shouldToggleModeOnTab("plan", true), false);
 	assert.equal(nextMode("build"), "plan");
@@ -50,11 +50,6 @@ test("Tab toggles only between Plan and Build and stays disabled in Ask", () => 
 	assert.equal(nextMode("ask"), "ask");
 });
 
-test("composer header uses the same color token as its mode label", () => {
-	assert.equal(modeColorToken("plan"), "warning");
-	assert.equal(modeColorToken("build"), "thinkingLow");
-	assert.equal(modeColorToken("ask"), "accent");
-});
 
 test("UI state snapshots are versioned, JSON-safe, and include the effective profile", () => {
 	const snapshot = makeModeStateSnapshot({ kind: "snapshot", sessionId: "s1", cwd: "/repo", mode: "ask", artifacts: [{ path: "ask_tools/a.html", label: "a", kind: "html" }], updatedAt: 123 });

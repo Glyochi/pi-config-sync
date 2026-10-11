@@ -5,6 +5,7 @@ import {
 	compactPermissionsLabel,
 	layoutBorderText,
 	makeComposerStatusSnapshot,
+	modeColorToken,
 	planSummaryForComposer,
 } from "../composer-status.ts";
 
@@ -45,6 +46,12 @@ const permissions: PermissionsStateSnapshot = {
 
 const truncate = (text: string, width: number, ellipsis: string) =>
 	text.length <= width ? text : width <= ellipsis.length ? ellipsis.slice(0, width) : `${text.slice(0, width - ellipsis.length)}${ellipsis}`;
+
+test("mode color tokens match the composer mode label", () => {
+	assert.equal(modeColorToken("plan"), "warning");
+	assert.equal(modeColorToken("build"), "thinkingLow");
+	assert.equal(modeColorToken("ask"), "accent");
+});
 
 test("composer plan summary requires an open plan owned in Plan or Build", () => {
 	assert.equal(planSummaryForComposer(mode()), "Composer status — Keep status out of prompt context");
