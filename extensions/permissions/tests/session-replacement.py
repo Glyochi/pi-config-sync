@@ -4,10 +4,11 @@
 import json
 import os
 import pathlib
-import select
+import queue
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 
 
@@ -72,7 +73,23 @@ def main() -> int:
             text=True,
             bufsize=1,
         )
+        output_queue: queue.Queue[str | None] = queue.Queue()
         stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+
+        def drain(stream: object, sink: list[str], output: queue.Queue[str | None] | None = None) -> None:
+            for line in stream:  # type: ignore[attr-defined]
+                value = line.rstrip()
+                sink.append(value)
+                if output is not None:
+                    output.put(value)
+            if output is not None:
+                output.put(None)
+
+        stdout_reader = threading.Thread(target=drain, args=(process.stdout, stdout_lines, output_queue), daemon=True)
+        stderr_reader = threading.Thread(target=drain, args=(process.stderr, stderr_lines), daemon=True)
+        stdout_reader.start()
+        stderr_reader.start()
 
         def send(record: dict[str, object]) -> None:
             assert process.stdin is not None
@@ -80,18 +97,16 @@ def main() -> int:
             process.stdin.flush()
 
         def response(request_id: str, timeout: float = 30) -> dict[str, object]:
-            assert process.stdout is not None
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
-                ready, _, _ = select.select([process.stdout], [], [], 0.25)
-                if not ready:
+                try:
+                    line = output_queue.get(timeout=min(0.25, deadline - time.monotonic()))
+                except queue.Empty:
                     if process.poll() is not None:
                         break
                     continue
-                line = process.stdout.readline()
-                if not line:
+                if line is None:
                     break
-                stdout_lines.append(line.rstrip())
                 try:
                     record = json.loads(line)
                 except json.JSONDecodeError:
@@ -122,12 +137,14 @@ def main() -> int:
             if process.poll() is None:
                 process.terminate()
             try:
-                _, stderr = process.communicate(timeout=5)
+                process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
-                _, stderr = process.communicate(timeout=5)
+                process.wait(timeout=5)
+            stdout_reader.join(timeout=5)
+            stderr_reader.join(timeout=5)
 
-        combined = "\n".join(stdout_lines) + "\n" + stderr
+        combined = "\n".join(stdout_lines) + "\n" + "\n".join(stderr_lines)
         assert "Event handler error (modes:state.v1)" not in combined, combined
         assert "stale after session replacement" not in combined, combined
 
