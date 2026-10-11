@@ -21,6 +21,7 @@ import {
 	MODE_STATE_VERSION,
 	latestModeState,
 	makeModeStateSnapshot,
+	modeColorToken,
 	nextMode,
 	summarizePlanMarkdown,
 	shouldToggleModeOnTab,
@@ -218,8 +219,7 @@ function installTabEditor(pi: ExtensionAPI, ctx: ExtensionContext): void {
 	}
 	class ModeSwitchEditor extends CustomEditor {
 		protected override renderTopBorder(width: number, hiddenLineCount: number): string {
-			const summary = composerStatus?.planSummary;
-			if (!summary) return super.renderTopBorder(width, hiddenLineCount);
+			const summary = composerStatus?.planSummary ?? "";
 			const overflow = hiddenLineCount > 0 ? ` ↑ ${hiddenLineCount} more ` : "";
 			const layout = layoutBorderText(
 				summary,
@@ -229,14 +229,17 @@ function installTabEditor(pi: ExtensionAPI, ctx: ExtensionContext): void {
 				(text, maxWidth, ellipsis) => truncateToWidth(text, maxWidth, ellipsis),
 				overflow,
 			);
-			const header = layout.label ? currentContext?.ui.theme.fg("accent", layout.label) ?? layout.label : "";
-			return `${this.borderColor(layout.leftBorder)}${header}${this.borderColor(layout.rightBorder + layout.overflowLabel)}`;
+			const theme = currentContext?.ui.theme;
+			const colorize = (text: string) => {
+				if (!text) return "";
+				return theme ? theme.fg(modeColorToken(selectedMode), text) : this.borderColor(text);
+			};
+			return `${colorize(layout.leftBorder)}${colorize(layout.label)}${colorize(layout.rightBorder + layout.overflowLabel)}`;
 		}
 
 		protected override renderBottomBorder(width: number, hiddenLineCount: number): string {
 			const theme = currentContext?.ui.theme;
-			const modeColor = selectedMode === "plan" ? "warning" : selectedMode === "build" ? "thinkingLow" : "accent";
-			const mode = theme ? theme.fg(modeColor, theme.bold(selectedMode)) : selectedMode;
+			const mode = theme ? theme.fg(modeColorToken(selectedMode), theme.bold(selectedMode)) : selectedMode;
 			const permission = compactPermissionsLabel(composerStatus?.permissions, (kind, text) =>
 				theme ? theme.fg(kind === "jev" ? "warning" : "error", text) : text,
 			);
@@ -254,9 +257,14 @@ function installTabEditor(pi: ExtensionAPI, ctx: ExtensionContext): void {
 		}
 
 		override handleInput(data: string): void {
-			if (matchesKey(data, "tab") && shouldToggleModeOnTab(this.isShowingAutocomplete())) {
-				const liveContext = currentContext;
-				if (liveContext) void setMode(pi, nextMode(selectedMode), liveContext);
+			if (matchesKey(data, "tab")) {
+				const autocompleteIsOpen = this.isShowingAutocomplete();
+				if (shouldToggleModeOnTab(selectedMode, autocompleteIsOpen)) {
+					const liveContext = currentContext;
+					if (liveContext) void setMode(pi, nextMode(selectedMode), liveContext);
+				} else if (autocompleteIsOpen) {
+					super.handleInput(data);
+				}
 				return;
 			}
 			super.handleInput(data);

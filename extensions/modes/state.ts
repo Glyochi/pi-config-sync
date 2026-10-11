@@ -31,11 +31,15 @@ export function permissionProfileFor(mode: Mode): PermissionProfile {
 }
 
 export function nextMode(mode: Mode): Mode {
-	return mode === "build" ? "plan" : mode === "plan" ? "ask" : "build";
+	return mode === "build" ? "plan" : mode === "plan" ? "build" : "ask";
 }
 
-export function shouldToggleModeOnTab(autocompleteIsOpen: boolean): boolean {
-	return !autocompleteIsOpen;
+export function shouldToggleModeOnTab(mode: Mode, autocompleteIsOpen: boolean): boolean {
+	return mode !== "ask" && !autocompleteIsOpen;
+}
+
+export function modeColorToken(mode: Mode): "warning" | "thinkingLow" | "accent" {
+	return mode === "plan" ? "warning" : mode === "build" ? "thinkingLow" : "accent";
 }
 
 export function makeModeStateSnapshot(input: Omit<ModeStateSnapshot, "schemaVersion" | "permissionProfile">): ModeStateSnapshot {

@@ -7,6 +7,7 @@ import {
 	latestModeState,
 	makeModeStateSnapshot,
 	permissionProfileFor,
+	modeColorToken,
 	nextMode,
 	shouldToggleModeOnTab,
 	summarizePlanMarkdown,
@@ -38,12 +39,21 @@ test("Ask uses the Build permission profile", () => {
 	assert.equal(permissionProfileFor("plan"), "plan");
 });
 
-test("Tab cycles modes only when autocomplete is closed", () => {
-	assert.equal(shouldToggleModeOnTab(false), true);
-	assert.equal(shouldToggleModeOnTab(true), false);
+test("Tab toggles only between Plan and Build and stays disabled in Ask", () => {
+	assert.equal(shouldToggleModeOnTab("build", false), true);
+	assert.equal(shouldToggleModeOnTab("plan", false), true);
+	assert.equal(shouldToggleModeOnTab("ask", false), false);
+	assert.equal(shouldToggleModeOnTab("build", true), false);
+	assert.equal(shouldToggleModeOnTab("plan", true), false);
 	assert.equal(nextMode("build"), "plan");
-	assert.equal(nextMode("plan"), "ask");
-	assert.equal(nextMode("ask"), "build");
+	assert.equal(nextMode("plan"), "build");
+	assert.equal(nextMode("ask"), "ask");
+});
+
+test("composer header uses the same color token as its mode label", () => {
+	assert.equal(modeColorToken("plan"), "warning");
+	assert.equal(modeColorToken("build"), "thinkingLow");
+	assert.equal(modeColorToken("ask"), "accent");
 });
 
 test("UI state snapshots are versioned, JSON-safe, and include the effective profile", () => {

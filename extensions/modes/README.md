@@ -8,7 +8,7 @@ A small, independent user extension providing **Ask**, **Plan**, and **Build** m
 - `/plan`: read-only project research and plan creation/revision. The only editable Markdown is the attached plan in `.pi/plans/`.
 - `/build`: ordinary implementation. Ask and Build cannot edit `.pi/plans/*.md`; update plan status through the extension's structured plan tool.
 
-Tab cycles Build → Plan → Ask when autocomplete is closed; when suggestions are open, Tab still accepts the selected suggestion. Modes persist per session; new sessions start in Build. The `CustomEditor` wrapper preserves Pi's editor behavior and renders the chatbox-status plan summary and permission state in its top and lower border rows. The default file-completion use of Tab when autocomplete is closed is replaced by the mode toggle. If another extension owns the editor, the wrapper yields and slash commands remain available.
+With autocomplete closed, Tab toggles only between Build and Plan; in Ask it is a no-op. `/ask` is required to enter Ask, and `/plan` or `/build` is required to leave it. When suggestions are open, Tab still accepts the selected suggestion in every mode. Modes persist per session; new sessions start in Build. The `CustomEditor` wrapper preserves Pi's editor behavior and renders the chatbox-status plan summary and permission state in its top and lower border rows. The top composer border uses the same mode color as its label; other composer lines are unchanged. If another extension owns the editor, the wrapper yields and slash commands remain available.
 
 ## Plans and recovery
 
