@@ -198,7 +198,7 @@ function notify(ctx: ExtensionContext, message: string, level: "info" | "warning
 	catch { /* No UI is available; command/tool results still carry the message. */ }
 }
 
-async function setMode(pi: ExtensionAPI, mode: Mode, ctx: ExtensionContext, announceSelection = true): Promise<boolean> {
+async function setMode(pi: ExtensionAPI, mode: Mode, ctx: ExtensionContext): Promise<boolean> {
 	activateContext(ctx);
 	if (!ctx.isIdle()) {
 		notify(ctx, "Wait for the agent to finish before switching modes.", "warning");
@@ -210,7 +210,6 @@ async function setMode(pi: ExtensionAPI, mode: Mode, ctx: ExtensionContext, anno
 	applyTools(pi, ctx);
 	installTabEditor(pi, ctx);
 	publishState(pi, ctx);
-	if (announceSelection) notify(ctx, `${mode[0]!.toUpperCase()}${mode.slice(1)} mode selected.`, "info");
 	return true;
 }
 
@@ -272,7 +271,7 @@ function installTabEditor(pi: ExtensionAPI, ctx: ExtensionContext): void {
 				const autocompleteIsOpen = this.isShowingAutocomplete();
 				if (shouldToggleModeOnTab(selectedMode, autocompleteIsOpen)) {
 					const liveContext = currentContext;
-					if (liveContext) void setMode(pi, nextMode(selectedMode), liveContext, false);
+					if (liveContext) void setMode(pi, nextMode(selectedMode), liveContext);
 				} else if (autocompleteIsOpen) {
 					super.handleInput(data);
 				} else if (selectedMode === "ask" && currentContext) {
