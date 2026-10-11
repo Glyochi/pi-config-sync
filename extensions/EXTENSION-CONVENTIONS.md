@@ -7,7 +7,7 @@ This is guidance for extensions in `~/.pi/agent/extensions/`, not a required fra
 - Use Pi’s built-in `pi.on()` lifecycle events for facts Pi already owns (session, agent, message, tool, and UI-prompt lifecycle).
 - Use `pi.events` for live communication between extensions. Do not parse transcript prose, status-bar strings, notifications, or private files to discover another extension’s state.
 - The extension that owns a value is its source of truth. Consumers observe it; they should not change or re-create its policy.
-- Keep display extensions read-only: subscribe to data, maintain only derived presentation state, and do not register tools or modify session/policy state unless that is a separate, explicit feature.
+- Keep display extensions policy-read-only: subscribe to data and maintain derived presentation state; do not register tools or change producer-owned policy. A deliberately persistent display annotation may append a custom session entry, but document it and keep it out of model context.
 
 ## Public event contracts
 
@@ -38,4 +38,4 @@ The TypeScript definitions and runtime guards live in [`shared/contracts.ts`](./
 - `chatbox-status:composer.v1` — a bounded, session/cwd-scoped render view-model containing only the eligible plan summary and compact permission switches. The existing modes editor consumes it; do not install a competing editor or duplicate Pi's native model metadata row.
 - `chatbox-status-timing` — a versioned custom session entry containing one agent-run duration and outcome. Pi custom entries persist in the transcript but do not participate in LLM context.
 
-The modes extension persists its own branch-sensitive mode/plan attachment state in session entries and publishes live snapshots. The permissions extension owns its session-local switches/counters and publishes snapshots when they change. `chatbox-status` derives presentation state and generation timing without owning policy. UI consumers must not import private producer implementation modules.
+The modes extension persists its own branch-sensitive mode/plan attachment state in session entries and publishes live snapshots. The permissions extension owns its session-local switches/counters and publishes snapshots when they change. `chatbox-status` derives presentation state and generation timing without owning policy. Its one deliberate persistence exception is `chatbox-status-timing`, a versioned custom entry rendered in the transcript but excluded from model context. UI consumers must not import private producer implementation modules.

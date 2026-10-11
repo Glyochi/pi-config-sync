@@ -1,12 +1,11 @@
-import type {
-	ComposerPermissionState,
-	ComposerStatusSnapshot,
-	ModeStateSnapshot,
-	PermissionsStateSnapshot,
-	StateEventKind,
+import {
+	COMPOSER_PLAN_SUMMARY_MAX_CHARS,
+	type ComposerPermissionState,
+	type ComposerStatusSnapshot,
+	type ModeStateSnapshot,
+	type PermissionsStateSnapshot,
+	type StateEventKind,
 } from "./contracts.ts";
-
-export const MAX_COMPOSER_PLAN_SUMMARY_CHARS = 420;
 
 function plainInline(value: string): string {
 	return value
@@ -28,7 +27,7 @@ export function planSummaryForComposer(snapshot: ModeStateSnapshot | undefined):
 	const title = plainInline(plan.title);
 	const goal = plainInline(plan.goalSummary ?? "");
 	const summary = [title, goal].filter(Boolean).join(" — ");
-	return summary ? boundedText(summary, MAX_COMPOSER_PLAN_SUMMARY_CHARS) : undefined;
+	return summary ? boundedText(summary, COMPOSER_PLAN_SUMMARY_MAX_CHARS) : undefined;
 }
 
 export function compactPermissionState(snapshot: PermissionsStateSnapshot | undefined): ComposerPermissionState | undefined {

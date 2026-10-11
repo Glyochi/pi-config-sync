@@ -14,6 +14,7 @@ export const PERMISSIONS_STATE_VERSION = 1 as const;
 
 export const COMPOSER_STATUS_EVENT = "chatbox-status:composer.v1";
 export const COMPOSER_STATUS_VERSION = 1 as const;
+export const COMPOSER_PLAN_SUMMARY_MAX_CHARS = 420;
 export const CHATBOX_TIMING_ENTRY_TYPE = "chatbox-status-timing";
 
 export type Mode = "ask" | "plan" | "build";
@@ -174,12 +175,17 @@ function isComposerPermissionState(value: unknown): value is ComposerPermissionS
 		typeof value.threshold === "number" && Number.isFinite(value.threshold) && value.threshold >= 0 && value.threshold <= 1;
 }
 
+function isComposerPlanSummary(value: unknown): value is string {
+	return typeof value === "string" && Array.from(value).length <= COMPOSER_PLAN_SUMMARY_MAX_CHARS &&
+		!/[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(value);
+}
+
 /** Runtime guard for the versioned composer view-model event. */
 export function isComposerStatusSnapshot(value: unknown): value is ComposerStatusSnapshot {
 	if (!isRecord(value)) return false;
 	return value.schemaVersion === COMPOSER_STATUS_VERSION && (value.kind === "snapshot" || value.kind === "changed") &&
 		isNonEmptyString(value.sessionId) && typeof value.cwd === "string" &&
-		(value.planSummary === undefined || typeof value.planSummary === "string" && value.planSummary.length <= 420) &&
+		(value.planSummary === undefined || isComposerPlanSummary(value.planSummary)) &&
 		(value.permissions === undefined || isComposerPermissionState(value.permissions)) && Number.isFinite(value.updatedAt);
 }
 

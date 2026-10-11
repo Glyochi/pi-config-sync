@@ -76,6 +76,8 @@ test("composer snapshots validate session-scoped display data", () => {
 	};
 	assert.equal(isComposerStatusSnapshot(snapshot), true);
 	assert.equal(isComposerStatusSnapshot({ ...snapshot, planSummary: "x".repeat(421) }), false);
+	assert.equal(isComposerStatusSnapshot({ ...snapshot, planSummary: "\u001b[31munsafe\u001b[0m" }), false);
+	assert.equal(isComposerStatusSnapshot({ ...snapshot, planSummary: "😀".repeat(420) }), true);
 	assert.equal(isComposerStatusSnapshot({ ...snapshot, permissions: { ...snapshot.permissions, threshold: 2 } }), false);
 	assert.equal(isComposerStatusSnapshot({ ...snapshot, sessionId: "" }), false);
 });
