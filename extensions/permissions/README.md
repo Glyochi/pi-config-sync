@@ -20,6 +20,7 @@ extension.
 | `tests/hardblock.test.ts` | Which command shapes the credential matcher catches and which it must not |
 | `tests/e2e.sh` | End-to-end probes through real headless Pi sessions |
 | `tests/commands.py` | Drives the `/permissions` command surface over RPC mode, since print mode cannot run a slash command and the TUI is not scriptable |
+| `tests/session-replacement.py` | Switches to an existing session over RPC and checks that mode events do not touch stale contexts |
 | `BEHAVIOR.md` | The quick lookup: the pipeline in order and a command table per switch and mode. Its tables are executed by `tests/lib.test.ts`, so they cannot drift from the engine. |
 
 ## The two switches
@@ -103,6 +104,12 @@ Two harness facts worth knowing:
 
 The switch matrix runs against temp configs through `PI_PERMISSIONS_CONFIG_PATH`; the
 real `permissions.jsonc` is never modified.
+
+The session-lifecycle regression test needs no model call or credentials; it starts two local session files, switches to the second in one RPC process, and checks the mode event path:
+
+```bash
+python3 ~/.pi/agent/extensions/permissions/tests/session-replacement.py
+```
 
 The command surface has its own harness, because print mode cannot run a slash command:
 
