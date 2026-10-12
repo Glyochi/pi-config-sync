@@ -231,23 +231,30 @@ def execution_contexts(path, raw, scenario, locations, scenario_index):
     return thread_ids
 
 
-def execution_link(path, scenario, link, events, participants):
+def execution_link(path, scenario, link, events):
     source, target = events[link["source"]], events[link["target"]]
     category = link["category"]
     context = "scenario {!r} link {!r}".format(scenario["id"], link["id"])
+
+    def execution_context(event):
+        if event.get("thread"):
+            return ("thread", event["thread"])
+        return ("external", event["participant"])
+
     if category == "sequence":
-        same_thread = source.get("thread") and source.get("thread") == target.get("thread")
-        same_external = (participants[source["participant"]]["kind"] == "external"
-                         and source["participant"] == target["participant"])
-        if not (same_thread or same_external):
+        if execution_context(source) != execution_context(target):
             fail(path, link["_line"], "Scenarios", context, "sequence links must stay in one executing thread or external actor; use spawn, message, or signal across contexts")
         if source["kind"] == "terminate":
             fail(path, link["_line"], "Scenarios", context, "termination cannot continue execution")
-    if category == "spawn":
-        if target["kind"] != "start" or not target.get("thread") or source.get("thread") == target.get("thread"):
+    elif category == "spawn":
+        if not target.get("thread") or target["kind"] != "start" or source.get("thread") == target.get("thread"):
             fail(path, link["_line"], "Scenarios", context, "spawn must target a start event in a different thread")
+        if source["kind"] == "terminate":
+            fail(path, link["_line"], "Scenarios", context, "a terminated thread cannot spawn another thread")
         if link["loop"]:
             fail(path, link["_line"], "Scenarios", context, "spawn cannot be an execution loop; repeat the creator's sequence instead")
+    elif execution_context(source) == execution_context(target):
+        fail(path, link["_line"], "Scenarios", context, "message and signal links must cross execution contexts; use sequence within one context")
 
 
 def parse_flows_text(text, path="FLOWS.md"):
@@ -454,7 +461,7 @@ def parse_flows_text(text, path="FLOWS.md"):
                     fail(path, l_line, "Scenarios", l_context, "category must be sequence, spawn, message, or signal")
                 parsed_link = scenario["links"][-1]
                 parsed_link["category"] = category
-                execution_link(path, scenario, parsed_link, event_by_id, participants)
+                execution_link(path, scenario, parsed_link, event_by_id)
         link_ids = [item["id"] for item in scenario["links"]]
         if len(link_ids) != len(set(link_ids)):
             duplicate = next(value for i, value in enumerate(link_ids) if value in link_ids[:i])
@@ -469,7 +476,16 @@ def parse_flows_text(text, path="FLOWS.md"):
             if not link["loop"]:
                 adjacency[link["source"]].append(link["target"])
                 indegree[link["target"]] += 1
+        thread_events = defaultdict(list)
         for event in scenario["events"]:
+            if event.get("thread"):
+                thread_events[event["thread"]].append(event)
+            if event["kind"] == "terminate" and outgoing[event["id"]]:
+                fail(path, event["_line"], "Scenarios", "event {!r}".format(event["id"]), "a thread termination event cannot have outgoing links")
+            if event["kind"] == "start":
+                incoming_start = incoming[event["id"]]
+                if any(link.get("category") != "spawn" for link in incoming_start):
+                    fail(path, event["_line"], "Scenarios", "event {!r}".format(event["id"]), "thread entry can only be reached by a spawn link")
             branches = [link for link in outgoing[event["id"]] if not link["loop"]]
             if event["kind"] == "decision":
                 guards = [link["guard"] for link in branches]
@@ -477,6 +493,11 @@ def parse_flows_text(text, path="FLOWS.md"):
                     fail(path, event["_line"], "Scenarios", "event {!r}".format(event["id"]), "decision needs at least two distinct, guarded outgoing branches")
             if event["kind"] == "join" and len([link for link in incoming[event["id"]] if not link["loop"]]) < 2:
                 fail(path, event["_line"], "Scenarios", "event {!r}".format(event["id"]), "join needs at least two incoming non-loop links")
+        for thread_id, events_in_thread in thread_events.items():
+            starts = [event for event in events_in_thread if event["kind"] == "start"]
+            if len(starts) != 1:
+                event = events_in_thread[0]
+                fail(path, event["_line"], "Scenarios", "thread {!r}".format(thread_id), "a thread with expanded events must have exactly one start event")
         ready = deque(event["id"] for event in scenario["events"] if indegree[event["id"]] == 0)
         visited = 0
         while ready:
@@ -782,10 +803,14 @@ def render_flow_html(flow, source_name="FLOWS.md", layout_filename="flow-graph.l
     script_dir = Path(__file__).resolve().parent
     style = CSS + (script_dir.joinpath("flow_runtime.css").read_text(encoding="utf-8") if runtime else "")
     script = script_dir.joinpath("flow_runtime.js").read_text(encoding="utf-8") if runtime else JS
+    sidebar = '''<section id="participant-controls"><h3>Participant instances</h3><div class="participant-modes"><button id="highlight-mode" type="button" aria-pressed="true">Highlight</button><button id="filter-mode" type="button" aria-pressed="false">Filter</button></div><div id="participant-list"></div><button id="clear-participants" type="button">Clear selection</button><p class="note">Selections apply across scenarios.</p></section>'''
+    runtime_legend = ""
+    body_class = "runtime-view" if runtime else ""
+    graph_label = "Process and thread frames with top-to-bottom execution paths" if runtime else "Left-to-right causal event graph"
     return """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Intended runtime flows</title><style>{css}</style></head>
-<body><header><h1>Intended runtime flows</h1><span class="north-star">{source} · selective guidance, not an execution trace</span><div class="navigation"><button id="back-button" type="button" disabled>← Back</button><nav id="breadcrumbs" aria-label="Scenario breadcrumbs"></nav></div><div class="layout-tools"><button id="save-flow-layout" type="button">Save flow layout</button><span id="layout-status" aria-live="polite"></span></div></header>
-<div class="layout"><aside><h2>Scenarios</h2><div id="scenario-index"></div><section id="participant-controls"><h3>Participant instances</h3><div class="participant-modes"><button id="highlight-mode" type="button" aria-pressed="true">Highlight</button><button id="filter-mode" type="button" aria-pressed="false">Filter</button></div><div id="participant-list"></div><button id="clear-participants" type="button">Clear selection</button><p class="note">Selections apply across scenarios.</p></section></aside><main><section id="scenario-summary"></section><div class="graph-shell"><svg id="flow-graph" role="img" aria-label="Left-to-right causal event graph"></svg></div></main><aside id="details" aria-live="polite"><p class="note">Select an event or typed link for details.</p></aside></div>
-<script type="application/json" id="flow-data">{data}</script><script type="application/json" id="layout-info">{layout_info}</script><script>{script}</script></body></html>""".format(css=style, source=source, data=json_for_script(model), layout_info=json_for_script({"version": LAYOUT_VERSION, "filename": os.path.basename(layout_filename)}), script=script)
+<body class="{body_class}"><header><h1>Intended runtime flows</h1><span class="north-star">{source} · selective guidance, not an execution trace</span><div class="navigation"><button id="back-button" type="button" disabled>← Back</button><nav id="breadcrumbs" aria-label="Scenario breadcrumbs"></nav></div><div class="layout-tools"><button id="save-flow-layout" type="button">Save flow layout</button><span id="layout-status" aria-live="polite"></span></div></header>
+<div class="layout"><aside><h2>Scenarios</h2><div id="scenario-index"></div>{sidebar}</aside><main><section id="scenario-summary"></section>{runtime_legend}<div class="graph-shell"><svg id="flow-graph" role="img" aria-label="{graph_label}"></svg></div></main><aside id="details" aria-live="polite"><p class="note">Select an event or typed link for details.</p></aside></div>
+<script type="application/json" id="flow-data">{data}</script><script type="application/json" id="layout-info">{layout_info}</script><script>{script}</script></body></html>""".format(css=style, source=source, body_class=body_class, sidebar=sidebar, runtime_legend=runtime_legend, graph_label=graph_label, data=json_for_script(model), layout_info=json_for_script({"version": LAYOUT_VERSION, "filename": os.path.basename(layout_filename)}), script=script)
 
 
 def render_flow_file(input_path="map/FLOWS.md", output_path="map/flow-graph.html"):

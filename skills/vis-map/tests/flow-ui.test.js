@@ -10,10 +10,14 @@ const vm = require("node:vm");
 
 const scripts = path.join(__dirname, "../scripts");
 const fixture = path.join(__dirname, "fixtures/intended-flows.md");
+const runtimeFixture = path.join(__dirname, "fixtures/execution-flows.md");
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), "flow-ui-"));
 const output = path.join(temp, "flow-graph.html");
+const runtimeOutput = path.join(temp, "runtime-flow.html");
 const generated = spawnSync("python3", [path.join(scripts, "flow_visualize.py"), fixture, output], { encoding: "utf8" });
 assert.equal(generated.status, 0, generated.stderr);
+const runtimeGenerated = spawnSync("python3", [path.join(scripts, "flow_visualize.py"), runtimeFixture, runtimeOutput], { encoding: "utf8" });
+assert.equal(runtimeGenerated.status, 0, runtimeGenerated.stderr);
 const source = fs.readFileSync(output, "utf8");
 const dataMatch = source.match(/<script type="application\/json" id="flow-data">([\s\S]*?)<\/script>/);
 const layoutMatch = source.match(/<script type="application\/json" id="layout-info">([\s\S]*?)<\/script>/);
@@ -22,6 +26,14 @@ assert.ok(dataMatch && layoutMatch && scriptMatch);
 const model = JSON.parse(dataMatch[1]);
 const layoutInfo = JSON.parse(layoutMatch[1]);
 const appScript = scriptMatch[1];
+const runtimeSource = fs.readFileSync(runtimeOutput, "utf8");
+const runtimeDataMatch = runtimeSource.match(/<script type="application\/json" id="flow-data">([\s\S]*?)<\/script>/);
+const runtimeLayoutMatch = runtimeSource.match(/<script type="application\/json" id="layout-info">([\s\S]*?)<\/script>/);
+const runtimeScriptMatch = runtimeSource.match(/<script>([\s\S]*?)<\/script>/);
+assert.ok(runtimeDataMatch && runtimeLayoutMatch && runtimeScriptMatch);
+const runtimeModel = JSON.parse(runtimeDataMatch[1]);
+const runtimeLayoutInfo = JSON.parse(runtimeLayoutMatch[1]);
+const runtimeScript = runtimeScriptMatch[1];
 
 class Element {
   constructor(tag) {
@@ -46,11 +58,11 @@ class Element {
   click() { this.trigger("click"); }
   remove() {}
 }
-function environment() {
-  const ids = ["flow-data", "layout-info", "scenario-index", "participant-list", "flow-graph", "scenario-summary", "details", "back-button", "breadcrumbs", "highlight-mode", "filter-mode", "clear-participants", "save-flow-layout", "layout-status"];
+function environment(flowModel = model, flowScript = appScript, flowLayoutInfo = layoutInfo) {
+  const ids = ["flow-data", "layout-info", "scenario-index", "participant-controls", "participant-list", "flow-graph", "scenario-summary", "details", "back-button", "breadcrumbs", "highlight-mode", "filter-mode", "clear-participants", "save-flow-layout", "layout-status"];
   const elements = Object.fromEntries(ids.map((id) => [id, new Element("div")]));
-  elements["flow-data"].textContent = JSON.stringify(model);
-  elements["layout-info"].textContent = JSON.stringify(layoutInfo);
+  elements["flow-data"].textContent = JSON.stringify(flowModel);
+  elements["layout-info"].textContent = JSON.stringify(flowLayoutInfo);
   const listeners = {};
   const downloads = { text: null, filename: null };
   const document = {
@@ -78,7 +90,7 @@ function environment() {
     }
     return element;
   };
-  vm.runInNewContext(appScript, sandbox, { filename: "flow-ui.js" });
+  vm.runInNewContext(flowScript, sandbox, { filename: "flow-ui.js" });
   return { app: window.flowGraphApp, elements, window, downloads };
 }
 function find(element, predicate, results = []) {
@@ -208,6 +220,88 @@ test("event/link details expose contracts, bindings, guards, and sync/async mode
   app.selectEvent("schedule-job");
   assert.match(elements.details.textContent, /async/);
   assert.match(elements.details.textContent, /work_item → job/);
+});
+
+test("version-2 view groups process/thread frames and keeps output offline", () => {
+  new vm.Script(runtimeScript, { filename: "flow-runtime-ui.js" });
+  assert.equal(runtimeModel.version, 2);
+  assert.match(runtimeSource, /class="runtime-view"/);
+  assert.match(runtimeSource, /setAttribute\("id", "thread-list"\)/);
+  assert.doesNotMatch(runtimeSource, /<(?:script|link)[^>]+(?:src|href)=["']https?:\/\//);
+  assert.doesNotMatch(runtimeSource, /\bfetch\s*\(/);
+  const { app, elements } = environment(runtimeModel, runtimeScript, runtimeLayoutInfo);
+  assert.equal(app.currentScenario, "supervisor");
+  const main = byAttr(elements["flow-graph"], "data-process-frame", "parent");
+  const requestThreads = byAttr(elements["flow-graph"], "data-thread-frame", "requests");
+  const contextOnly = byAttr(elements["flow-graph"], "data-thread-frame", "second-main");
+  assert.match(main.textContent, /Supervisor process/);
+  assert.match(main.textContent, /fixed thread/);
+  assert.match(requestThreads.textContent, /0\.\.n threads \(family\)/);
+  assert.match(contextOnly.textContent, /Context only · steps not expanded/);
+  assert.match(elements["flow-graph"].textContent, /External: Launcher/);
+  const constructor = byAttr(elements["flow-graph"], "data-event-id", "construct");
+  assert.match(constructor.getAttribute("class"), /action/);
+  app.selectEvent("construct");
+  assert.match(elements.details.textContent, /Main thread/);
+  assert.match(elements.details.textContent, /Supervisor process/);
+  app.selectLink("spawn-process");
+  assert.match(elements.details.textContent, /starts-child-process link/);
+  assert.match(elements.details.textContent, /spawn/);
+  assert.match(elements.details.textContent, /does not stop the sender unless waiting is explicitly modeled/);
+  const status = byAttr(elements["flow-graph"], "data-link-id", "status-message");
+  assert.equal(status.getAttribute("data-link-category"), "message");
+  const wake = byAttr(elements["flow-graph"], "data-link-id", "request-wake");
+  assert.equal(wake.getAttribute("data-link-category"), "signal");
+  app.selectEvent("tick-complete");
+  assert.match(elements.details.textContent, /Continue independently of child readiness/);
+  app.openSubflow("setup");
+  assert.equal(app.currentScenario, "child-setup");
+  app.selectEvent("initialize");
+  assert.match(elements.details.textContent, /Flow DataType shape/);
+  app.goBack();
+  assert.equal(app.currentScenario, "supervisor");
+  app.selectFrame("thread", "reconciler");
+  assert.match(elements.details.textContent, /Supervisor process/);
+});
+
+test("version-2 context selection filters steps without hiding frames", () => {
+  const { app, elements } = environment(runtimeModel, runtimeScript, runtimeLayoutInfo);
+  const thread = byAttr(elements["participant-controls"], "data-thread-key", "supervisor::thread:reconciler");
+  thread.checked = true;
+  thread.trigger("change");
+  assert.match(byAttr(elements["flow-graph"], "data-event-id", "snapshot").getAttribute("class"), /participant-highlight/);
+  assert.match(byAttr(elements["flow-graph"], "data-event-id", "construct").getAttribute("class"), /participant-dim/);
+  app.setParticipantMode("filter");
+  assert.equal(byAttr(elements["flow-graph"], "data-event-id", "construct").getAttribute("display"), "none");
+  assert.notEqual(byAttr(elements["flow-graph"], "data-event-id", "snapshot").getAttribute("display"), "none");
+  assert.match(find(elements["scenario-summary"], item => item.className === "runtime-note")[0].textContent, /Filtered steps/);
+  assert.ok(byAttr(elements["flow-graph"], "data-process-frame", "parent"));
+  assert.ok(byAttr(elements["flow-graph"], "data-thread-frame", "second-main"));
+  app.clearParticipantSelection();
+  assert.equal(byAttr(elements["flow-graph"], "data-event-id", "construct").getAttribute("display"), null);
+  const store = byAttr(elements["participant-list"], "data-participant-key", "supervisor::store");
+  store.checked = true;
+  store.trigger("change");
+  assert.match(byAttr(elements["flow-graph"], "data-event-id", "snapshot").getAttribute("class"), /participant-highlight/);
+  assert.match(byAttr(elements["flow-graph"], "data-event-id", "construct").getAttribute("class"), /participant-dim/);
+});
+
+test("version-2 dragging clamps events to their thread lane and saves layout", () => {
+  const { app, elements, window, downloads } = environment(runtimeModel, runtimeScript, runtimeLayoutInfo);
+  const scenario = runtimeModel.scenarios.find(item => item.id === "supervisor"), id = "construct", original = { ...app.positions[id] };
+  const node = byAttr(elements["flow-graph"], "data-event-id", id);
+  node.trigger("pointerdown", { clientX: original.x, clientY: original.y });
+  window.dispatch("pointermove", { clientX: original.x + 10000, clientY: original.y + 800 });
+  window.dispatch("pointerup");
+  const moved = app.positions[id], lane = scenario.layout.lanes.main;
+  assert.equal(moved.x, lane.right - 160);
+  assert.equal(moved.y, original.y + 800);
+  const mainFrame = byAttr(elements["flow-graph"], "data-process-frame", "parent");
+  assert.ok(Number(mainFrame.children[0].getAttribute("height")) >= moved.y + 150 - 40);
+  elements["save-flow-layout"].trigger("click");
+  assert.equal(downloads.filename, "runtime-flow.layout.json");
+  const saved = JSON.parse(downloads.text);
+  assert.deepEqual(JSON.parse(JSON.stringify(saved.scenarios.supervisor[id])), { x: moved.x, y: moved.y });
 });
 
 test.after(() => fs.rmSync(temp, { recursive: true, force: true }));

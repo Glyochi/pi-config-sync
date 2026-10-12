@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import re
 import subprocess
@@ -8,6 +10,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "intended-flows.md"
+EXECUTION_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "execution-flows.md"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from flow_visualize import (FlowFormatError, layout_path_for_output, load_saved_layout,
@@ -55,6 +58,75 @@ class FlowTests(unittest.TestCase):
         insertion = '\n[[scenario.links]]\nid = "bad-cycle"\nsource = "command-ready"\ntarget = "parse-options"\ntype = "causes"\n'
         invalid = self.source.replace('[[scenario]]\nid = "client-setup"', insertion + '\n[[scenario]]\nid = "client-setup"', 1)
         self.invalid(invalid, "causal cycle must be an intentional loop=true edge")
+
+    def test_version_two_context_layout_counts_and_cross_context_links(self):
+        source = EXECUTION_FIXTURE.read_text(encoding="utf-8")
+        flow = parse_flows_text(source, str(EXECUTION_FIXTURE))
+        first, second = render_model(flow), render_model(flow)
+        self.assertEqual(json.dumps(first, sort_keys=True), json.dumps(second, sort_keys=True))
+        scenario = next(item for item in first["scenarios"] if item["id"] == "supervisor")
+        self.assertEqual(first["version"], 2)
+        self.assertEqual(scenario["layout"]["orientation"], "top-to-bottom")
+        self.assertEqual({p["id"] for p in scenario["processes"]}, {"parent", "child-a", "child-b"})
+        self.assertEqual(next(t for t in scenario["threads"] if t["id"] == "requests")["count"], "0..n")
+        frames = scenario["layout"]["frames"]
+        processes = {frame["id"]: frame for frame in frames["processes"]}
+        threads = {frame["id"]: frame for frame in frames["threads"]}
+        self.assertTrue(threads["second-main"]["context_only"])
+        for thread in threads.values():
+            parent = processes[thread["process"]]
+            self.assertGreaterEqual(thread["left"], parent["left"])
+            self.assertLessEqual(thread["right"], parent["right"])
+            self.assertGreater(thread["top"], parent["top"])
+            self.assertLess(thread["bottom"], parent["bottom"])
+        self.assertLess(frames["external"][0]["right"], processes["parent"]["left"])
+        events = {event["id"]: event for event in scenario["events"]}
+        positions = scenario["layout"]["positions"]
+        warning = io.StringIO()
+        with contextlib.redirect_stderr(warning):
+            clamped_model = render_model(flow, {"supervisor": {"construct": {"x": 1, "y": 1}}})
+        clamped = next(item for item in clamped_model["scenarios"] if item["id"] == "supervisor")
+        self.assertEqual(clamped["layout"]["positions"]["construct"], {
+            "x": clamped["layout"]["lanes"]["main"]["left"] + 160,
+            "y": clamped["layout"]["first_row"],
+        })
+        self.assertIn("clamped saved flow position", warning.getvalue())
+        for link in scenario["links"]:
+            if link["category"] == "sequence" and not link["loop"]:
+                self.assertEqual(events[link["source"]]["thread"], events[link["target"]]["thread"])
+                self.assertGreater(positions[link["target"]]["y"], positions[link["source"]]["y"])
+            if link["category"] == "spawn":
+                self.assertEqual(events[link["target"]]["kind"], "start")
+        self.assertTrue(any(link["category"] == "message" for link in scenario["links"]))
+        self.assertTrue(any(link["category"] == "signal" for link in scenario["links"]))
+        self.assertTrue(any(link["loop"] and link["category"] == "sequence" for link in scenario["links"]))
+        page = render_flow_html(flow, "execution-flows.md")
+        for marker in ('class="runtime-view"', 'setAttribute("id", "thread-list")', "top-to-bottom execution paths"):
+            self.assertIn(marker, page)
+        self.assertIn('"count":"0..n"', page)
+        self.assertNotIn("map-graph.html", page)
+        self.assertNotRegex(page, r"<(?:script|link)[^>]+(?:src|href)=[\"']https?://")
+
+    def test_version_two_rejects_unresolved_contexts_invalid_containment_and_cycles(self):
+        source = EXECUTION_FIXTURE.read_text(encoding="utf-8")
+        invalid_process = source.replace('process = "parent"', 'process = "missing-process"', 1)
+        self.assertRegex(self.invalid(invalid_process, "unknown process reference 'missing-process'"), r"synthetic-invalid\.md:\d+ \[Scenarios\]")
+        invalid_thread = source.replace('thread = "main"', 'thread = "missing-thread"', 1)
+        self.assertRegex(self.invalid(invalid_thread, "unknown thread reference 'missing-thread'"), r"synthetic-invalid\.md:\d+ \[Scenarios\]")
+        duplicate_thread = source.replace('id = "second-control"', 'id = "child-main"', 1)
+        self.invalid(duplicate_thread, "duplicate threads ID 'child-main'")
+        invalid_main = source.replace('id = "reconciler"\nname = "Supervisor loop thread"\nprocess = "parent"\ndaemon = true', 'id = "reconciler"\nname = "Supervisor loop thread"\nprocess = "parent"\nrole = "main"\ndaemon = true', 1)
+        self.invalid(invalid_main, "at most one modeled main thread")
+        cross_sequence = source.replace('source = "construct"\ntarget = "start-loop"\ntype = "continues"', 'source = "construct"\ntarget = "snapshot"\ntype = "continues"', 1)
+        self.invalid(cross_sequence, "sequence links must stay in one executing thread")
+        bad_spawn = source.replace('source = "spawn-child"\ntarget = "child-entry"', 'source = "spawn-child"\ntarget = "setup"', 1)
+        self.invalid(bad_spawn, "spawn must target a start event in a different thread")
+        unmarked_cycle = source.replace('[[scenario]]\nid = "child-setup"', '\n[[scenario.links]]\nid = "bad-cycle"\nsource = "diff"\ntarget = "snapshot"\ntype = "cycles"\ncategory = "sequence"\nguard = "unexpected recovery"\n\n[[scenario]]\nid = "child-setup"', 1)
+        self.assertRegex(self.invalid(unmarked_cycle, "causal cycle must be an intentional loop=true edge"), r"synthetic-invalid\.md:\d+ \[Scenarios\]")
+        bad_message = source.replace('source = "send-status"\ntarget = "read-status"\ntype = "status-pipe"', 'source = "send-status"\ntarget = "send-status"\ntype = "invalid same-thread message"', 1)
+        self.invalid(bad_message, "message and signal links must cross execution contexts")
+        missing_start = source.replace('id = "request-entry"\ntitle = "Enter request-handler thread"\nparticipant = "controller"\nthread = "requests"\nkind = "start"', 'id = "request-entry"\ntitle = "Enter request-handler thread"\nparticipant = "controller"\nthread = "requests"\nkind = "action"', 1)
+        self.invalid(missing_start, "a thread with expanded events must have exactly one start event")
 
     def test_graph_model_is_deterministic_and_non_loop_edges_flow_left_to_right(self):
         flow = parse_flows_file(str(FIXTURE))

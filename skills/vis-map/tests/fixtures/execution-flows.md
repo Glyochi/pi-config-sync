@@ -261,6 +261,13 @@ thread = "child-control"
 kind = "action"
 
 [[scenario.events]]
+id = "control-entry"
+title = "Enter status reader thread"
+participant = "controller"
+thread = "control"
+kind = "start"
+
+[[scenario.events]]
 id = "read-status"
 title = "Read status message"
 participant = "controller"
@@ -273,6 +280,13 @@ title = "Update shared store in reader thread"
 participant = "store"
 thread = "control"
 kind = "action"
+
+[[scenario.events]]
+id = "request-entry"
+title = "Enter request-handler thread"
+participant = "controller"
+thread = "requests"
+kind = "start"
 
 [[scenario.events]]
 id = "wake"
@@ -414,6 +428,13 @@ type = "starts-control-thread"
 category = "spawn"
 
 [[scenario.links]]
+id = "control-entry-status"
+source = "control-entry"
+target = "read-status"
+type = "reads status messages"
+category = "sequence"
+
+[[scenario.links]]
 id = "control-status"
 source = "worker-control-entry"
 target = "send-status"
@@ -432,6 +453,13 @@ id = "reader-store"
 source = "read-status"
 target = "store-status"
 type = "synchronous-update"
+category = "sequence"
+
+[[scenario.links]]
+id = "request-start-wake"
+source = "request-entry"
+target = "wake"
+type = "continues"
 category = "sequence"
 
 [[scenario.links]]
@@ -464,6 +492,13 @@ kind = "runtime"
 entity = "worker"
 
 [[scenario.events]]
+id = "child-setup-entry"
+title = "Enter child setup thread"
+participant = "worker"
+thread = "main"
+kind = "start"
+
+[[scenario.events]]
 id = "initialize"
 title = "Initialize from settings"
 participant = "worker"
@@ -477,6 +512,13 @@ title = "Return to caller"
 participant = "worker"
 thread = "main"
 kind = "return"
+
+[[scenario.links]]
+id = "initialize-entry"
+source = "child-setup-entry"
+target = "initialize"
+type = "initializes"
+category = "sequence"
 
 [[scenario.links]]
 id = "initialize-ready"

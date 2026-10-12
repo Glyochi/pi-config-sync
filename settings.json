@@ -15,10 +15,9 @@
   "tuiMode": "fullscreen",
   "hideThinkingBlock": true,
   "enabledModels": [
-    "opencode/deepseek-v4.1-flash",
-    "opencode/gpt-6-luna",
     "openai/gpt-6-luna",
-    "openai/gpt-6-sol"
+    "openai/gpt-6-sol",
+    "openai/gpt-6.1-sol"
   ],
   "showCacheMissNotices": true,
   "modelThinkingLevels": {

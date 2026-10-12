@@ -12,6 +12,7 @@
 .runtime-view .process-frame.selected > rect { stroke:#0f766e; stroke-width:4 }
 .runtime-view .thread-frame.participant-dim { opacity:.4 }
 .runtime-view .event-node .event-shape { fill:#eff6ff; stroke:#2563eb; stroke-width:2 }
+.runtime-view .event-node.trigger .event-shape { fill:#ecfdf5; stroke:#047857 }
 .runtime-view .event-node.start .event-shape { fill:#ecfdf5; stroke:#047857; rx:38 }
 .runtime-view .event-node.terminate .event-shape { fill:#f1f5f9; stroke:#334155; stroke-width:3; rx:38 }
 .runtime-view .event-node.decision .event-shape { fill:#fff7ed; stroke:#c2410c }

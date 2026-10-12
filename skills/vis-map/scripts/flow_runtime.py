@@ -44,7 +44,7 @@ def causal_depths(scenario):
 
 def layout_runtime_scenario(scenario):
     depths = causal_depths(scenario)
-    positions, lanes, process_lanes = {}, {}, {}
+    positions, lanes, process_lanes, external_lanes = {}, {}, {}, {}
     groups = defaultdict(list)
     for event in scenario["events"]:
         group = event.get("thread") or "external:" + event["participant"]
@@ -69,7 +69,9 @@ def layout_runtime_scenario(scenario):
     for participant in scenario["participants"]:
         if participant["kind"] == "external":
             key = "external:" + participant["id"]
-            left += place(key, left) + FRAME_GAP
+            width = place(key, left)
+            external_lanes[participant["id"]] = {"left": left, "right": left + width, "top": 100}
+            left += width + FRAME_GAP
     for process in scenario["processes"]:
         process_left = left
         left += 24
@@ -81,7 +83,8 @@ def layout_runtime_scenario(scenario):
         process_lanes[process["id"]] = {"left": process_left, "right": left, "top": PROCESS_TOP}
         left += FRAME_GAP
     layout = {"positions": positions, "lanes": lanes, "process_lanes": process_lanes,
-              "width": max(700, left), "height": 500, "first_row": FIRST_ROW, "orientation": "top-to-bottom"}
+              "external_lanes": external_lanes, "width": max(700, left), "height": 500,
+              "first_row": FIRST_ROW, "orientation": "top-to-bottom"}
     refit_runtime_frames(scenario, layout)
     return layout
 
@@ -96,7 +99,7 @@ def clamp_runtime_position(scenario, layout, event_id, position):
 
 def refit_runtime_frames(scenario, layout):
     """Refit nested frames after saved coordinates are applied; never change lanes."""
-    threads, processes = [], []
+    threads, processes, external = [], [], []
     for thread in scenario["threads"]:
         points = [layout["positions"][event["id"]] for event in scenario["events"]
                   if event.get("thread") == thread["id"]]
@@ -108,7 +111,18 @@ def refit_runtime_frames(scenario, layout):
         children = [frame for frame in threads if frame["process"] == process["id"]]
         lane = layout["process_lanes"][process["id"]]
         processes.append({"id": process["id"], **lane,
-                          "bottom": max((frame["bottom"] + 30 for frame in children), default=420)})
-    layout["frames"] = {"processes": processes, "threads": threads}
+                          "bottom": max((frame["bottom"] + 30 for frame in children), default=420),
+                          "context_only": not children})
+    for participant in scenario["participants"]:
+        if participant["kind"] != "external":
+            continue
+        points = [layout["positions"][event["id"]] for event in scenario["events"]
+                  if event["participant"] == participant["id"]]
+        lane = layout["external_lanes"][participant["id"]]
+        external.append({"id": participant["id"], **lane,
+                         "bottom": max((point["y"] + 150 for point in points), default=THREAD_TOP + 240),
+                         "context_only": not points})
+    layout["frames"] = {"processes": processes, "threads": threads, "external": external}
     layout["height"] = max(500, max((frame["bottom"] + 40 for frame in processes), default=0),
+                           max((frame["bottom"] + 40 for frame in external), default=0),
                            max((point["y"] + 150 for point in layout["positions"].values()), default=0))
