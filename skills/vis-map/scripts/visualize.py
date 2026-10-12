@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Render map/MAP.md as an interactive directed graph using Pyvis.
+"""Render independent ownership-map and intended-flow HTML views.
 
-Reads the markdown produced by the `map` skill and writes a self-contained
-HTML graph with Pyvis resources inlined. A neighboring layout sidecar preserves
-node positions across HTML regeneration without changing `map/MAP.md`.
-The format is self-describing via
+The no-argument CLI discovers canonical map/MAP.md and map/FLOWS.md sources.
+Positional arguments retain the MAP-only renderer and its layout sidecar.
+The ownership format is self-describing via
 `- **Type**: X` tags, so this script renders any
 node/edge type generically: known types get their fixed styling, unknown types
 get a deterministic fallback. Interact-edge DataType labels that exactly
@@ -19,7 +18,8 @@ edges remain physics springs for layout. All styling is hardcoded below so the
 output is identical regardless of which model invokes this script.
 
 Usage:
-    python3 visualize.py [map/MAP.md] [map/map-graph.html]
+    python3 visualize.py
+    python3 visualize.py [map/MAP.md [map/map-graph.html]]
 """
 
 import json
@@ -33,8 +33,7 @@ from html import escape as html_escape
 try:
     from pyvis.network import Network
 except ImportError:
-    print("Error: pyvis is not installed. Run: pip install pyvis", file=sys.stderr)
-    sys.exit(1)
+    Network = None
 
 # ---------------------------------------------------------------------------
 # Styling standard (source of truth — do not change per-invocation)
@@ -2042,12 +2041,10 @@ def apply_saved_layout(net, positions):
     return applied
 
 
-def main():
-    requested_input = sys.argv[1] if len(sys.argv) > 1 else None
-    input_path = default_input_path(requested_input)
-    output_path = (
-        sys.argv[2] if len(sys.argv) > 2 else "map/map-graph.html"
-    )
+def render_map(input_path, output_path):
+    if Network is None:
+        print("Error: pyvis is not installed. Run: pip install pyvis", file=sys.stderr)
+        sys.exit(1)
     layout_path = layout_path_for_output(output_path)
 
     try:
@@ -2182,5 +2179,37 @@ def main():
     )
 
 
+def main():
+    # Preserve the positional MAP-only CLI. No arguments discover either or both canonical sources.
+    if len(sys.argv) > 1:
+        if sys.argv[1] in {"-h", "--help"}:
+            print("Usage: visualize.py [map/MAP.md [map/map-graph.html]]")
+            print("       visualize.py  (render canonical MAP.md and/or FLOWS.md)")
+            return 0
+        if len(sys.argv) > 3:
+            print("Usage: visualize.py [map/MAP.md [map/map-graph.html]]", file=sys.stderr)
+            return 2
+        render_map(default_input_path(sys.argv[1]), sys.argv[2] if len(sys.argv) > 2 else "map/map-graph.html")
+        return 0
+
+    map_path, flows_path = "map/MAP.md", "map/FLOWS.md"
+    has_map, has_flows = os.path.isfile(map_path), os.path.isfile(flows_path)
+    if not has_map and not has_flows:
+        print("Error: neither map/MAP.md nor map/FLOWS.md exists. Run /map for an ownership map or request an intended runtime-flow model.", file=sys.stderr)
+        return 1
+
+    flow_failed = False
+    if has_flows:
+        try:
+            from flow_visualize import FlowFormatError, render_flow_file
+            render_flow_file(flows_path, "map/flow-graph.html")
+        except FlowFormatError as error:
+            print("Error: {}".format(error), file=sys.stderr)
+            flow_failed = True
+    if has_map:
+        render_map(map_path, "map/map-graph.html")
+    return 1 if flow_failed else 0
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

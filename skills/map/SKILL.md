@@ -1,6 +1,6 @@
 ---
 name: map
-description: Collaboratively model a repository's intended architecture, create a high-level map/MAP.md starter when absent unless the user opts out, answer codebase questions, and refine the model on request. Use when the user wants to understand or discuss a codebase's mental model.
+description: Collaboratively model a repository's intended ownership architecture or opt-in runtime flows, create a high-level MAP.md starter for ownership-map requests, answer codebase questions, and refine models on request.
 ---
 
 # Map
@@ -8,6 +8,35 @@ description: Collaboratively model a repository's intended architecture, create 
 `/map` is a collaborative repo-understanding workflow. It helps the user and agent form a shared mental model of the repository, using a graph of **Entities**, **DataTypes**, and their relationships. The model is intentionally selective: it should capture the important structure and guidance, not every file, class, or implementation detail.
 
 The conversation is part of the work. The user may ask questions at any point; answer them using the repository and inspect relevant code when the question or conversation calls for it. Periodically give a brief checkpoint of the understanding so far and invite corrections. A checkpoint is not a request to approve or save a file.
+
+## Intended runtime flows (opt-in)
+
+`map/FLOWS.md` is an optional, standalone description of **intended** runtime lifecycles. It is not an execution trace and is independent of `map/MAP.md`: flow entities, Flow DataTypes, scenario IDs, and HTML views are flow-local. Never infer correspondence to ownership-map nodes or add cross-view links. Optional code references on Flow Entities are navigation hints, not implementation-status claims.
+
+Create or update `FLOWS.md` only when the user asks for runtime-flow modeling. Before its first creation, inspect the relevant entrypoints and discuss the intended high-level behavior with the user; write only after you agree on the scenario outline. Distinguish what the user intends from what code inspection confirms. If meaningful behavior differs, surface the evidence and ask how to represent it; never silently reconcile the intended model to the code. A flow-only request does not require or create `MAP.md`.
+
+Start at the high-level scenario. When deeper exploration would help, offer concrete, code-grounded choices and let the user choose the depth. Preserve overview events as linked subflows rather than replacing the overview with implementation detail. Confirm with the user before **each subsequent file update**. Deliberately deferred detail is not an unknown gap; do not require shutdown, failure, or other unrequested paths in the initial scope.
+
+### `FLOWS.md` authoring contract, version 1
+
+Use one typed Markdown file with exactly one `toml` fenced block under each of `## Format`, `## Flow Entities`, `## Flow DataTypes`, and `## Scenarios`. TOML provides the typed records; Markdown holds the framing prose. The format version is explicit:
+
+```toml
+# Under ## Format
+version = 1
+```
+
+- All IDs use lowercase stable slugs matching `[a-z][a-z0-9_-]*`. Entity, DataType, and scenario IDs are unique in their own namespaces; participant, event, and link IDs are unique within their scenario. Event IDs may be reused in different scenarios.
+- `## Flow Entities`: repeated `[[entity]]` records with stable `id`, `name`, `summary`, and optional `code_refs = ["path/to/source::symbol"]`. These describe flow participants conceptually, not MAP entities.
+- `## Flow DataTypes`: repeated `[[datatype]]` records with stable `id`, `name`, `summary`, and a `fields` array of `{ name, type, required, description? }` inline tables. These describe **shape only**; event/link fields carry timing and delivery semantics.
+- `## Scenarios`: repeated `[[scenario]]` records with stable `id`, `title`, optional `description`, `entrypoint` boolean, and optional `inputs`/`outputs` port arrays. Each port has `name`, `datatype` (a Flow DataType ID), and optional `required` (default true) and `description`.
+- Nest `[[scenario.participants]]` records under a scenario. Each has an instance-local stable `id`, `name`, and `kind = "runtime" | "external"`. Runtime participants require `entity` referencing a Flow Entity; external actors must not reference one. Events attribute to participant **instances**, so two instances may use the same Flow Entity.
+- Nest `[[scenario.events]]` records with an ID unique **within that scenario**, `title`, participant ID, and `kind = "trigger" | "action" | "decision" | "join" | "subflow" | "gap" | "return"`. Optional `contract` references a Flow DataType; optional `timing` and `delivery` describe event semantics. A `trigger` is owned by an external participant. A `gap` requires `open_question` and represents genuinely unexplored behavior.
+- A `subflow` event requires `subflow` (target scenario ID), `mode = "sync" | "async"`, and a `bindings` array. `sync` means the caller awaits the subflow; `async` means it schedules work without waiting for completion. An `in` binding maps a caller input/output port to a child input; an `out` binding maps a child output to a caller output. Both sides and the declared binding must name the same Flow DataType. Every required child input must be bound.
+- Nest `[[scenario.links]]` records with scenario-local stable `id`, `source` and `target` event IDs, and non-empty `type`; optional `label`, `guard`, `loop`, `timing`, and `delivery` annotate the causal relation. `loop = true` requires a guard and is the only way to express a causal back-edge. A `decision` needs at least two guarded outgoing branches with distinct guards; a `join` needs at least two incoming non-loop links.
+- Every reference must resolve; every scenario not called as a subflow must say `entrypoint = true`. Unmarked causal cycles, duplicate IDs, malformed records, and broken bindings are errors, not partially renderable graphs. Deliberately deferred details are not gaps.
+
+See the synthetic CLI/service sample at `skills/vis-map/tests/fixtures/intended-flows.md` for the complete syntax. Do not copy it as a real-repository model.
 
 ## Guidance and implementation
 
@@ -42,15 +71,15 @@ Importance is a small, user-steered scale, not a fixed enum. Start low (2–3 ti
 
 ## Workflow
 
-1. **Locate the map and scan the top level.** Check only for the canonical `map/MAP.md` at the repository root. Identify major architectural units from the top-level structure. Use the code structure as the first signal for the initial map; consult repository documentation for context, but do not let documentation override the code structure when they conflict. Do not descend into individual files, classes, or functions during this initial scan.
+1. **Locate the requested model and scan at the right depth.** For ownership maps, check the canonical `map/MAP.md` at the repository root. For runtime-flow requests, also check for `map/FLOWS.md` and inspect only relevant entrypoints needed to discuss intended behavior. Identify major architectural units from the top-level structure. Use code structure as the first signal for ownership maps. Do not descend during an ownership-map initial scan; flow entrypoint inspection is the exception.
 
-2. **If `map/MAP.md` does not exist, create a high-level starter before user feedback.** Build the first pass from the top-level scan, create the `map/` directory if needed, and write it to `map/MAP.md` at the repository root. Do not wait for user steering or approval before this initial creation, unless the user explicitly asks for a conversation-only session or says not to create a file. Write it as working repo guidance and use it as the starting point for the conversation. Then briefly summarize its scope, key branches, and location; do not print the entire file unless the user asks. Invite questions, corrections, and user-directed deep dives. This is the one automatic map-file creation; later changes follow step 9.
+2. **If `map/MAP.md` does not exist and the request is for an ownership map, create a high-level starter before user feedback.** Build the first pass from the top-level scan, create the `map/` directory if needed, and write it to `map/MAP.md` at the repository root. Do not wait for user steering or approval before this initial creation, unless the user explicitly asks for a conversation-only session or says not to create a file. Write it as working repo guidance and use it as the starting point for the conversation. Then briefly summarize its scope, key branches, and location; do not print the entire file unless the user asks. Invite questions, corrections, and user-directed deep dives. This is the one automatic ownership-map creation; later changes follow step 9. For a flow-only request, follow the opt-in workflow above and do not create `MAP.md` as a side effect.
 
-3. **If `map/MAP.md` exists, read it before proposing changes.** Preserve existing content where possible. If its intended status is unclear, discuss the intended model before recasting it. Do not use or migrate other root-level architecture files as substitutes. When a map update is requested and confirmed, write the updated guidance to `map/MAP.md`.
+3. **For ownership-map work, if `map/MAP.md` exists, read it before proposing changes.** Preserve existing content where possible. If its intended status is unclear, discuss the intended model before recasting it. Do not use or migrate other root-level architecture files as substitutes. When a map update is requested and confirmed, write the updated guidance to `map/MAP.md`.
 
-4. **Explore at the user's pace.** The initial pass stays at the top level. Inspect a deeper branch when the user asks about it or the conversation explicitly directs you there. Answer repo questions with relevant code evidence, and fold the user's corrections into the intended model. Do not try to map the entire repository just for completeness.
+4. **Explore at the user's pace.** For ownership maps, the initial pass stays at the top level. For flow requests, inspect the entrypoints as directed by the opt-in workflow. Inspect a deeper branch when the user asks about it or the conversation explicitly directs you there. Answer repo questions with relevant code evidence, and fold the user's corrections into the intended model. Do not try to map the entire repository just for completeness.
 
-5. **Recheck saved code references on revisits.** When `/map` is run again, verify the paths and implementation statuses recorded in `map/MAP.md`, even if the user has not asked about those particular nodes. Do not treat this as permission to scan unreferenced branches. Report stale or changed references in the conversation; do not silently update `map/MAP.md` unless the user requests and approves a map update.
+5. **Recheck ownership-map code references on revisits.** When `/map` revisits `map/MAP.md`, verify the paths and implementation statuses recorded there, even if the user has not asked about those particular nodes. Do not treat this as permission to scan unreferenced branches. Report stale or changed references in the conversation; do not silently update `map/MAP.md` unless the user requests and approves a map update.
 
 6. **Classify nodes.** For each deliberate unit, decide Entity vs DataType (or a new type the user steers in). A DataType has no logic and exists to define a data contract. Tag every node with `- **Type**: X`.
 
@@ -58,7 +87,7 @@ Importance is a small, user-steered scale, not a fixed enum. Start low (2–3 ti
 
 8. **Model edges.** Record `Contains` (hierarchy), `Interact` (with its data-type label or matching DataType node), and `Composed of` (DataType nesting). An `Interact` edge's `DataType` value references a node only when it exactly matches a heading under `## DataTypes`; do not create nodes just to resolve labels. Tag every non-hierarchical edge with `- **Type**: X` in the Relationships section.
 
-9. **Update the file only when requested, except for the initial creation in step 2.** Conversation, questions, corrections, and checkpoints do not by themselves authorize a later file update. When the user requests an update, summarize what will change and show a focused diff (or concise before/after snippets) for the affected nodes and relationships. Do not print or draft the entire `map/MAP.md` in chat; omit unchanged sections. Let the user steer the proposed changes, then write only after the user explicitly confirms the update. Preserve content the user did not ask to change.
+9. **Update `MAP.md` only when requested, except for the initial creation in step 2.** Conversation, questions, corrections, and checkpoints do not by themselves authorize a later ownership-map update. Flow updates follow the opt-in workflow above and require confirmation before each subsequent file update. When the user requests an update, summarize what will change and show a focused diff (or concise before/after snippets) for the affected nodes and relationships. Do not print or draft the entire `map/MAP.md` in chat; omit unchanged sections. Let the user steer the proposed changes, then write only after the user explicitly confirms the update. Preserve content the user did not ask to change.
 
 10. **Be intentional.** Entities and DataTypes are deliberate, never auto-generated en masse. Leave out low-value details and let the user add nodes, relationships, or deeper branches through steering. When implementation differs from the guidance, explain the difference without assuming it must be fixed; offer a possible code change only when relevant, and wait for an explicit request before editing code.
 
