@@ -1,0 +1,40 @@
+/* Version-2 flow view only; ownership and version-1 styling remain untouched. */
+.runtime-view .graph-shell { background:#f8fafc }
+.runtime-view .process-frame > rect { fill:#eef2f6; stroke:#334155; stroke-width:3; rx:14 }
+.runtime-view .thread-frame > rect { fill:#fff; stroke:#64748b; stroke-width:1.5; rx:8 }
+.runtime-view .thread-frame.context-only > rect { fill:#f8fafc; stroke-dasharray:6 4 }
+.runtime-view .process-label { font-size:17px; font-weight:700; fill:#0f172a }
+.runtime-view .thread-label { font-size:13px; font-weight:700; fill:#1e293b }
+.runtime-view .frame-meta { font-size:11px; fill:#475569 }
+.runtime-view .frame-caption { font-size:10px; fill:#64748b }
+.runtime-view .frame-header { cursor:pointer }
+.runtime-view .thread-frame.selected > rect,.runtime-view .thread-frame.participant-highlight > rect { stroke:#d97706; stroke-width:3 }
+.runtime-view .process-frame.selected > rect { stroke:#0f766e; stroke-width:4 }
+.runtime-view .thread-frame.participant-dim { opacity:.4 }
+.runtime-view .event-node .event-shape { fill:#eff6ff; stroke:#2563eb; stroke-width:2 }
+.runtime-view .event-node.start .event-shape { fill:#ecfdf5; stroke:#047857; rx:38 }
+.runtime-view .event-node.terminate .event-shape { fill:#f1f5f9; stroke:#334155; stroke-width:3; rx:38 }
+.runtime-view .event-node.decision .event-shape { fill:#fff7ed; stroke:#c2410c }
+.runtime-view .event-node.join .event-shape { fill:#f5f3ff; stroke:#7c3aed; rx:28 }
+.runtime-view .event-node.subflow .event-shape { fill:#eef2ff; stroke:#4f46e5 }
+.runtime-view .event-node.gap .event-shape { fill:#fff7ed; stroke:#b45309; stroke-dasharray:7 4 }
+.runtime-view .event-node.selected .event-shape,.runtime-view .event-node:focus .event-shape { stroke:#0f172a; stroke-width:4 }
+.runtime-view .event-node.participant-highlight .event-shape { stroke:#d97706; stroke-width:4 }
+.runtime-view .edge-path.sequence { stroke:#475569 }
+.runtime-view .edge-path.spawn { stroke:#7c3aed; stroke-width:3; stroke-dasharray:3 5 }
+.runtime-view .edge-path.message { stroke:#0369a1; stroke-dasharray:10 5 }
+.runtime-view .edge-path.signal { stroke:#b45309; stroke-dasharray:2 4 }
+.runtime-view .edge-path.sequence.loop { stroke:#b91c1c; stroke-dasharray:8 5 }
+.runtime-view .edge-path.message.loop { stroke:#0369a1!important; stroke-dasharray:10 5 }
+.runtime-view .edge-path.signal.loop { stroke:#b45309!important; stroke-dasharray:2 4 }
+.runtime-view .edge-label { font-size:10px }
+.runtime-view .runtime-legend { display:flex; flex-wrap:wrap; gap:12px; padding:8px 0; font-size:11px; color:#475569 }
+.runtime-view .legend-line { display:inline-block; width:24px; border-top:2px solid #475569; margin-right:4px; vertical-align:middle }
+.runtime-view .legend-line.spawn { border-color:#7c3aed; border-top:3px dotted #7c3aed }
+.runtime-view .legend-line.message { border-color:#0369a1; border-top-style:dashed }
+.runtime-view .legend-line.signal { border-color:#b45309; border-top-style:dotted }
+.runtime-view .legend-line.loop { border-color:#b91c1c; border-top-style:dashed }
+.runtime-view .runtime-counts { font-size:12px; color:#334155; margin-top:6px }
+.runtime-view .runtime-note { font-size:11px; color:#64748b; margin:4px 0 }
+.runtime-view #thread-list { max-height:230px; overflow:auto; margin-top:6px }
+.runtime-view #thread-controls h3 { font-size:12px; margin:10px 0 4px }

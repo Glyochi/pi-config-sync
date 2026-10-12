@@ -10,8 +10,12 @@ import sys
 import tomllib
 import zlib
 from collections import defaultdict, deque
+from pathlib import Path
 
-FORMAT_VERSION = 1
+from flow_runtime import (LINK_COLORS as RUNTIME_LINK_COLORS, clamp_runtime_position,
+                          layout_runtime_scenario, refit_runtime_frames)
+
+FORMAT_VERSION = 2
 SECTIONS = ("Format", "Flow Entities", "Flow DataTypes", "Scenarios")
 ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
 EVENT_KINDS = {"trigger", "action", "decision", "join", "subflow", "gap", "return"}
@@ -184,13 +188,76 @@ def _private_fields_removed(item):
     return item
 
 
+def execution_contexts(path, raw, scenario, locations, scenario_index):
+    """Parse explicit scenario-local OS processes and their threads (v2 only)."""
+    context = "scenario {!r}".format(scenario["id"])
+    process_ids, thread_ids, main_threads = set(), set(), set()
+    for key in ("processes", "threads"):
+        values = table_list(path, "Scenarios", context, scenario["_line"], raw, key)
+        scenario[key] = []
+        for index, value in enumerate(values):
+            line = record_line(locations, key, index, scenario_index)
+            item_context = "{} {} #{}".format(context, key, index + 1)
+            allowed = {"id", "name", "count", "description"}
+            if key == "threads":
+                allowed |= {"process", "role", "daemon"}
+            expect_fields(path, "Scenarios", item_context, line, value, allowed)
+            item_id = string_field(path, "Scenarios", item_context, line, value, "id")
+            id_field(path, "Scenarios", item_context, line, item_id, key)
+            ids = process_ids if key == "processes" else thread_ids
+            if item_id in ids:
+                fail(path, line, "Scenarios", item_context, "duplicate {} ID {!r}".format(key, item_id))
+            ids.add(item_id)
+            count = value.get("count", 1)
+            if not ((type(count) is int and count > 0) or (type(count) is str and count in {"0..n", "1..n"})):
+                fail(path, line, "Scenarios", item_context, "count must be a positive integer, '0..n', or '1..n'")
+            item = {"id": item_id, "name": string_field(path, "Scenarios", item_context, line, value, "name"),
+                    "count": count, "description": string_field(path, "Scenarios", item_context, line, value, "description", False, "")}
+            if key == "threads":
+                process = string_field(path, "Scenarios", item_context, line, value, "process")
+                if process not in process_ids:
+                    fail(path, line, "Scenarios", item_context, "unknown process reference {!r}".format(process))
+                role = string_field(path, "Scenarios", item_context, line, value, "role", False, "background")
+                if role not in {"main", "background"}:
+                    fail(path, line, "Scenarios", item_context, "thread role must be main or background")
+                if role == "main":
+                    if count != 1 or process in main_threads:
+                        fail(path, line, "Scenarios", item_context, "a process may have at most one modeled main thread, with count=1")
+                    main_threads.add(process)
+                item.update(process=process, role=role)
+                if "daemon" in value:
+                    item["daemon"] = bool_field(path, "Scenarios", item_context, line, value, "daemon")
+            scenario[key].append(item)
+    return thread_ids
+
+
+def execution_link(path, scenario, link, events, participants):
+    source, target = events[link["source"]], events[link["target"]]
+    category = link["category"]
+    context = "scenario {!r} link {!r}".format(scenario["id"], link["id"])
+    if category == "sequence":
+        same_thread = source.get("thread") and source.get("thread") == target.get("thread")
+        same_external = (participants[source["participant"]]["kind"] == "external"
+                         and source["participant"] == target["participant"])
+        if not (same_thread or same_external):
+            fail(path, link["_line"], "Scenarios", context, "sequence links must stay in one executing thread or external actor; use spawn, message, or signal across contexts")
+        if source["kind"] == "terminate":
+            fail(path, link["_line"], "Scenarios", context, "termination cannot continue execution")
+    if category == "spawn":
+        if target["kind"] != "start" or not target.get("thread") or source.get("thread") == target.get("thread"):
+            fail(path, link["_line"], "Scenarios", context, "spawn must target a start event in a different thread")
+        if link["loop"]:
+            fail(path, link["_line"], "Scenarios", context, "spawn cannot be an execution loop; repeat the creator's sequence instead")
+
+
 def parse_flows_text(text, path="FLOWS.md"):
-    """Parse and fully validate a version-1 FLOWS.md document."""
+    """Parse and fully validate a version-1 or version-2 FLOWS.md document."""
     sections, locs = parse_toml_sections(text, path)
     format_data, format_line = sections["Format"], locs["Format"]["root"]
     expect_fields(path, "Format", "", format_line, format_data, {"version"})
-    if type(format_data.get("version")) is not int or format_data["version"] != FORMAT_VERSION:
-        fail(path, format_line, "Format", "", "version must be integer {}; unsupported or missing version".format(FORMAT_VERSION))
+    version = format_data.get("version")
+    if type(version) is not int or version not in {1, FORMAT_VERSION}:
+        fail(path, format_line, "Format", "", "version must be integer 1 or 2; unsupported or missing version")
 
     entity_data = sections["Flow Entities"]
     expect_fields(path, "Flow Entities", "", locs["Flow Entities"]["root"], entity_data, {"entity"})
@@ -253,7 +320,7 @@ def parse_flows_text(text, path="FLOWS.md"):
     for si, raw in enumerate(raw_scenarios):
         line = record_line(scenario_locs, "scenario", si)
         context = "scenario #{}".format(si + 1)
-        expect_fields(path, "Scenarios", context, line, raw, {"id", "title", "description", "entrypoint", "inputs", "outputs", "participants", "events", "links"})
+        expect_fields(path, "Scenarios", context, line, raw, {"id", "title", "description", "entrypoint", "inputs", "outputs", "participants", "events", "links"} | ({"processes", "threads"} if version == 2 else set()))
         scenario_id = string_field(path, "Scenarios", context, line, raw, "id")
         id_field(path, "Scenarios", context, line, scenario_id, "scenario")
         if scenario_id in scenario_ids:
@@ -266,6 +333,7 @@ def parse_flows_text(text, path="FLOWS.md"):
                     "inputs": port_records(path, raw, "inputs", line, context, datatype_ids),
                     "outputs": port_records(path, raw, "outputs", line, context, datatype_ids),
                     "participants": [], "events": [], "links": [], "_line": line}
+        thread_ids = execution_contexts(path, raw, scenario, scenario_locs, si) if version == 2 else set()
         all_ports = [port["name"] for port in scenario["inputs"] + scenario["outputs"]]
         if len(all_ports) != len(set(all_ports)):
             fail(path, line, "Scenarios", context, "input and output names must be unique")
@@ -306,15 +374,16 @@ def parse_flows_text(text, path="FLOWS.md"):
         for ei, event in enumerate(raw_events):
             e_line = record_line(scenario_locs, "events", ei, si)
             e_context = "{} event #{}".format(context, ei + 1)
-            expect_fields(path, "Scenarios", e_context, e_line, event, {"id", "title", "participant", "kind", "description", "contract", "timing", "delivery", "subflow", "mode", "bindings", "open_question"})
+            expect_fields(path, "Scenarios", e_context, e_line, event, {"id", "title", "participant", "kind", "description", "contract", "timing", "delivery", "subflow", "mode", "bindings", "open_question"} | ({"thread"} if version == 2 else set()))
             eid = string_field(path, "Scenarios", e_context, e_line, event, "id")
             id_field(path, "Scenarios", e_context, e_line, eid, "event")
             owner = string_field(path, "Scenarios", e_context, e_line, event, "participant")
             if owner not in participants:
                 fail(path, e_line, "Scenarios", e_context, "unknown participant reference {!r}".format(owner))
             kind = string_field(path, "Scenarios", e_context, e_line, event, "kind")
-            if kind not in EVENT_KINDS:
-                fail(path, e_line, "Scenarios", e_context, "kind must be one of {}".format(", ".join(sorted(EVENT_KINDS))))
+            event_kinds = EVENT_KINDS | ({"start", "terminate"} if version == 2 else set())
+            if kind not in event_kinds:
+                fail(path, e_line, "Scenarios", e_context, "kind must be one of {}".format(", ".join(sorted(event_kinds))))
             contract = string_field(path, "Scenarios", e_context, e_line, event, "contract", False, None)
             if contract is not None and contract not in datatype_ids:
                 fail(path, e_line, "Scenarios", e_context, "unknown Flow DataType reference {!r}".format(contract))
@@ -323,6 +392,17 @@ def parse_flows_text(text, path="FLOWS.md"):
                     "description": string_field(path, "Scenarios", e_context, e_line, event, "description", False, ""),
                     "contract": contract, "timing": string_field(path, "Scenarios", e_context, e_line, event, "timing", False, ""),
                     "delivery": string_field(path, "Scenarios", e_context, e_line, event, "delivery", False, ""), "_line": e_line}
+            if version == 2:
+                runtime = participants[owner]["kind"] == "runtime"
+                if not runtime and "thread" in event:
+                    fail(path, e_line, "Scenarios", e_context, "external events must not reference an application thread")
+                if runtime:
+                    thread = string_field(path, "Scenarios", e_context, e_line, event, "thread")
+                    if thread not in thread_ids:
+                        fail(path, e_line, "Scenarios", e_context, "unknown thread reference {!r}".format(thread))
+                    item["thread"] = thread
+                if kind in {"start", "terminate"} and not runtime:
+                    fail(path, e_line, "Scenarios", e_context, "thread start/terminate events must be runtime events")
             if kind == "trigger" and participants[owner]["kind"] != "external":
                 fail(path, e_line, "Scenarios", e_context, "trigger events must belong to an external participant")
             if kind == "gap":
@@ -349,7 +429,7 @@ def parse_flows_text(text, path="FLOWS.md"):
         for li, link in enumerate(raw_links):
             l_line = record_line(scenario_locs, "links", li, si)
             l_context = "{} link #{}".format(context, li + 1)
-            expect_fields(path, "Scenarios", l_context, l_line, link, {"id", "source", "target", "type", "label", "guard", "loop", "timing", "delivery"})
+            expect_fields(path, "Scenarios", l_context, l_line, link, {"id", "source", "target", "type", "label", "guard", "loop", "timing", "delivery"} | ({"category"} if version == 2 else set()))
             lid = string_field(path, "Scenarios", l_context, l_line, link, "id")
             id_field(path, "Scenarios", l_context, l_line, lid, "link")
             source = string_field(path, "Scenarios", l_context, l_line, link, "source")
@@ -368,6 +448,13 @@ def parse_flows_text(text, path="FLOWS.md"):
                                       "guard": guard, "loop": loop,
                                       "timing": string_field(path, "Scenarios", l_context, l_line, link, "timing", False, ""),
                                       "delivery": string_field(path, "Scenarios", l_context, l_line, link, "delivery", False, ""), "_line": l_line})
+            if version == 2:
+                category = string_field(path, "Scenarios", l_context, l_line, link, "category")
+                if category not in RUNTIME_LINK_COLORS:
+                    fail(path, l_line, "Scenarios", l_context, "category must be sequence, spawn, message, or signal")
+                parsed_link = scenario["links"][-1]
+                parsed_link["category"] = category
+                execution_link(path, scenario, parsed_link, event_by_id, participants)
         link_ids = [item["id"] for item in scenario["links"]]
         if len(link_ids) != len(set(link_ids)):
             duplicate = next(value for i, value in enumerate(link_ids) if value in link_ids[:i])
@@ -453,7 +540,7 @@ def parse_flows_text(text, path="FLOWS.md"):
     for scenario in scenarios:
         if not scenario["entrypoint"] and scenario["id"] not in invoked:
             fail(path, scenario["_line"], "Scenarios", "scenario {!r}".format(scenario["id"]), "unreferenced scenario must set entrypoint = true")
-    return _private_fields_removed({"version": FORMAT_VERSION, "entities": entities, "datatypes": datatypes, "scenarios": scenarios})
+    return _private_fields_removed({"version": version, "entities": entities, "datatypes": datatypes, "scenarios": scenarios})
 
 
 def parse_flows_file(path):
@@ -500,14 +587,19 @@ def render_model(flow, saved_layout=None):
     datatypes = {item["id"]: item for item in model["datatypes"]}
     scenarios = {item["id"]: item for item in model["scenarios"]}
     for scenario in model["scenarios"]:
-        scenario["layout"] = layout_scenario(scenario)
+        scenario["layout"] = layout_runtime_scenario(scenario) if model["version"] == 2 else layout_scenario(scenario)
         for participant in scenario["participants"]:
             participant["key"] = scenario["id"] + "::" + participant["id"]
             participant["scenario_title"] = scenario["title"]
         stored = saved_layout.get(scenario["id"], {})
         for event_id, position in stored.items():
             if event_id in scenario["layout"]["positions"]:
-                scenario["layout"]["positions"][event_id] = dict(position)
+                applied = clamp_runtime_position(scenario, scenario["layout"], event_id, position) if model["version"] == 2 else dict(position)
+                if applied != position:
+                    print("Warning: clamped saved flow position to its declared execution lane: {}/{}.".format(scenario["id"], event_id), file=sys.stderr)
+                scenario["layout"]["positions"][event_id] = applied
+        if model["version"] == 2:
+            refit_runtime_frames(scenario, scenario["layout"])
         positions = scenario["layout"]["positions"]
         scenario["layout"]["width"] = max(scenario["layout"]["width"], max((p["x"] + 180 for p in positions.values()), default=0))
         scenario["layout"]["height"] = max(scenario["layout"]["height"], max((p["y"] + 120 for p in positions.values()), default=0))
@@ -520,7 +612,7 @@ def render_model(flow, saved_layout=None):
                 for binding in event["bindings"]:
                     binding["datatype_name"] = datatypes[binding["datatype"]]["name"]
         for link in scenario["links"]:
-            link["color"] = LINK_COLORS[zlib.crc32(link["type"].encode()) % len(LINK_COLORS)]
+            link["color"] = RUNTIME_LINK_COLORS[link["category"]] if model["version"] == 2 else LINK_COLORS[zlib.crc32(link["type"].encode()) % len(LINK_COLORS)]
         for event in scenario["events"]:
             event["join_input_count"] = sum(1 for link in scenario["links"] if link["target"] == event["id"] and not link["loop"])
     return model
@@ -686,10 +778,14 @@ window.flowGraphApp={navigateTo:navigate,openSubflow:openSubflow,goBack:goBack,s
 def render_flow_html(flow, source_name="FLOWS.md", layout_filename="flow-graph.layout.json", saved_layout=None):
     model = render_model(flow, saved_layout)
     source = html.escape(os.path.basename(source_name))
+    runtime = flow["version"] == 2
+    script_dir = Path(__file__).resolve().parent
+    style = CSS + (script_dir.joinpath("flow_runtime.css").read_text(encoding="utf-8") if runtime else "")
+    script = script_dir.joinpath("flow_runtime.js").read_text(encoding="utf-8") if runtime else JS
     return """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Intended runtime flows</title><style>{css}</style></head>
 <body><header><h1>Intended runtime flows</h1><span class="north-star">{source} · selective guidance, not an execution trace</span><div class="navigation"><button id="back-button" type="button" disabled>← Back</button><nav id="breadcrumbs" aria-label="Scenario breadcrumbs"></nav></div><div class="layout-tools"><button id="save-flow-layout" type="button">Save flow layout</button><span id="layout-status" aria-live="polite"></span></div></header>
 <div class="layout"><aside><h2>Scenarios</h2><div id="scenario-index"></div><section id="participant-controls"><h3>Participant instances</h3><div class="participant-modes"><button id="highlight-mode" type="button" aria-pressed="true">Highlight</button><button id="filter-mode" type="button" aria-pressed="false">Filter</button></div><div id="participant-list"></div><button id="clear-participants" type="button">Clear selection</button><p class="note">Selections apply across scenarios.</p></section></aside><main><section id="scenario-summary"></section><div class="graph-shell"><svg id="flow-graph" role="img" aria-label="Left-to-right causal event graph"></svg></div></main><aside id="details" aria-live="polite"><p class="note">Select an event or typed link for details.</p></aside></div>
-<script type="application/json" id="flow-data">{data}</script><script type="application/json" id="layout-info">{layout_info}</script><script>{script}</script></body></html>""".format(css=CSS, source=source, data=json_for_script(model), layout_info=json_for_script({"version": LAYOUT_VERSION, "filename": os.path.basename(layout_filename)}), script=JS)
+<script type="application/json" id="flow-data">{data}</script><script type="application/json" id="layout-info">{layout_info}</script><script>{script}</script></body></html>""".format(css=style, source=source, data=json_for_script(model), layout_info=json_for_script({"version": LAYOUT_VERSION, "filename": os.path.basename(layout_filename)}), script=script)
 
 
 def render_flow_file(input_path="map/FLOWS.md", output_path="map/flow-graph.html"):

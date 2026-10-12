@@ -17,26 +17,61 @@ Create or update `FLOWS.md` only when the user asks for runtime-flow modeling. B
 
 Start at the high-level scenario. When deeper exploration would help, offer concrete, code-grounded choices and let the user choose the depth. Preserve overview events as linked subflows rather than replacing the overview with implementation detail. Confirm with the user before **each subsequent file update**. Deliberately deferred detail is not an unknown gap; do not require shutdown, failure, or other unrequested paths in the initial scope.
 
-### `FLOWS.md` authoring contract, version 1
+### Execution-first flow authoring
 
-Use one typed Markdown file with exactly one `toml` fenced block under each of `## Format`, `## Flow Entities`, `## Flow DataTypes`, and `## Scenarios`. TOML provides the typed records; Markdown holds the framing prose. The format version is explicit:
+A runtime flow must make execution boundaries legible, not merely attach component names to steps. For new flows use version 2: real OS-process frames contain their thread frames, and execution nodes sit inside the thread that performs them. Multiple threads in the same process share one outer frame. External actors remain outside application frames. The flow model remains independent of the ownership map.
+
+- Inspect the entrypoint, thread targets, process creation, and synchronous calls needed for the agreed scenario. Establish who executes each step before attributing events. An object such as a registry or allocator is a participant, **not an extra thread**: its synchronous operations execute in the calling thread. Constructor initialization before `.start()` belongs to the creator's thread, not the newly started thread.
+- Distinguish the creator's start operation from the new thread's entry event. Show one-time setup followed by the recurring wait/check/action loop; use visible guarded back-edges for repetition. Show a local stop/termination branch when it is in the agreed scope, without requiring a full shutdown or crash scenario. Do not invent initialization or termination behavior.
+- Model actual choices with `decision` events and labeled guarded branches, e.g. diff desired vs actual → missing/changed/matching → spawn/restart/no change. A plain message send is an action, not automatically a decision. Model synchronous branch convergence separately from genuinely awaited parallel joins.
+- Give communication explicit send/receive or wake/wait steps and `message`/`signal` links. `spawn` links lead to the new executing thread's entry. A sender continues unless an explicit wait is modeled; do not make a supervisor await child READY merely because startup and readiness appear in one diagram.
+- Deliberately choose represented process/thread instances. Known distinct workers can have separate frames; dynamic request/worker families carry explicit counts and descriptions. Counts describe modeled application contexts, not a measured OS census. Do not silently count queue feeder threads or resource-tracker helpers as application threads/processes.
+- Focused scenarios may retain context-only frames with no expanded steps. These are deliberate context, not unknown gaps. Preserve overview/subflow navigation instead of expanding every loop implementation in one scenario.
+
+### `FLOWS.md` authoring contract, version 2
+
+Use one typed Markdown file with exactly one `toml` fenced block under each of `## Format`, `## Flow Entities`, `## Flow DataTypes`, and `## Scenarios`. TOML provides the typed records; Markdown holds framing prose. Version 1 remains supported for legacy participant-only flows; do not infer missing execution contexts or silently migrate existing files. Confirm each requested update before writing.
 
 ```toml
 # Under ## Format
-version = 1
+version = 2
 ```
 
-- All IDs use lowercase stable slugs matching `[a-z][a-z0-9_-]*`. Entity, DataType, and scenario IDs are unique in their own namespaces; participant, event, and link IDs are unique within their scenario. Event IDs may be reused in different scenarios.
-- `## Flow Entities`: repeated `[[entity]]` records with stable `id`, `name`, `summary`, and optional `code_refs = ["path/to/source::symbol"]`. These describe flow participants conceptually, not MAP entities.
-- `## Flow DataTypes`: repeated `[[datatype]]` records with stable `id`, `name`, `summary`, and a `fields` array of `{ name, type, required, description? }` inline tables. These describe **shape only**; event/link fields carry timing and delivery semantics.
-- `## Scenarios`: repeated `[[scenario]]` records with stable `id`, `title`, optional `description`, `entrypoint` boolean, and optional `inputs`/`outputs` port arrays. Each port has `name`, `datatype` (a Flow DataType ID), and optional `required` (default true) and `description`.
-- Nest `[[scenario.participants]]` records under a scenario. Each has an instance-local stable `id`, `name`, and `kind = "runtime" | "external"`. Runtime participants require `entity` referencing a Flow Entity; external actors must not reference one. Events attribute to participant **instances**, so two instances may use the same Flow Entity.
-- Nest `[[scenario.events]]` records with an ID unique **within that scenario**, `title`, participant ID, and `kind = "trigger" | "action" | "decision" | "join" | "subflow" | "gap" | "return"`. Optional `contract` references a Flow DataType; optional `timing` and `delivery` describe event semantics. A `trigger` is owned by an external participant. A `gap` requires `open_question` and represents genuinely unexplored behavior.
-- A `subflow` event requires `subflow` (target scenario ID), `mode = "sync" | "async"`, and a `bindings` array. `sync` means the caller awaits the subflow; `async` means it schedules work without waiting for completion. An `in` binding maps a caller input/output port to a child input; an `out` binding maps a child output to a caller output. Both sides and the declared binding must name the same Flow DataType. Every required child input must be bound.
-- Nest `[[scenario.links]]` records with scenario-local stable `id`, `source` and `target` event IDs, and non-empty `type`; optional `label`, `guard`, `loop`, `timing`, and `delivery` annotate the causal relation. `loop = true` requires a guard and is the only way to express a causal back-edge. A `decision` needs at least two guarded outgoing branches with distinct guards; a `join` needs at least two incoming non-loop links.
-- Every reference must resolve; every scenario not called as a subflow must say `entrypoint = true`. Unmarked causal cycles, duplicate IDs, malformed records, and broken bindings are errors, not partially renderable graphs. Deliberately deferred details are not gaps.
+- All IDs use lowercase stable slugs matching `[a-z][a-z0-9_-]*`. Entity, DataType, and scenario IDs are unique in their own namespaces. Process, thread, participant, event, and link IDs each have their own scenario-local namespace; the same ID may be reused in another scenario. None references ownership-map nodes.
+- `## Flow Entities`: repeated `[[entity]]` records with stable `id`, `name`, `summary`, and optional `code_refs = ["path/to/source::symbol"]`. These identify conceptual participants, not execution frames. Code references are navigation hints, not implementation-status claims.
+- `## Flow DataTypes`: repeated `[[datatype]]` records with stable `id`, `name`, `summary`, and a `fields` array of `{ name, type, required, description? }` inline tables. These describe **shape only**; timing and delivery belong on events/links.
+- `## Scenarios`: repeated `[[scenario]]` records with stable `id`, `title`, optional `description`, `entrypoint` boolean, and optional `inputs`/`outputs` port arrays. Each port has `name`, `datatype` (a Flow DataType ID), optional `required` (default true), and optional `description`.
+- Nest `[[scenario.processes]]` records with `id`, `name`, optional `description`, and optional `count` (default 1). A count is a positive integer or `"0..n"` / `"1..n"` for an explicitly modeled family. Each record represents an OS-process instance or family, not a logical service box.
+- Nest `[[scenario.threads]]` records with `id`, `name`, owning `process` ID, optional `count` (same rules), optional `role = "main" | "background"` (default background), optional boolean `daemon`, and optional `description`. Counts are **per process instance**. A process has at most one modeled main thread, with count 1. Unexpanded threads/processes may be declared as context only; do not manufacture events to populate frames.
+- Nest `[[scenario.participants]]` records with `id`, `name`, `kind = "runtime" | "external"`, and optional `description`. Runtime participants require `entity` referencing a Flow Entity; external actors must not reference one. Multiple participant instances may use the same Flow Entity. Participants describe components/actors, independently of process/thread identity.
+- Nest `[[scenario.events]]` records with `id`, `title`, participant ID, and `kind = "trigger" | "start" | "action" | "decision" | "join" | "subflow" | "gap" | "return" | "terminate"`. Runtime events **require `thread`** referencing their actual executing thread. External events must not have `thread`. `start` means entry into an executing thread, not the creator's `.start()` call; `terminate` is its local endpoint. Both belong to runtime participants. `trigger` belongs to an external actor. Optional `description`, `contract`, `timing`, and `delivery` carry detail. A `gap` requires `open_question` and means genuinely unexplored behavior, not deliberately deferred detail.
+- A `subflow` event requires `subflow` (target scenario ID), `mode = "sync" | "async"`, and `bindings`. `sync` means the caller awaits it; `async` means work is scheduled without awaiting completion. An `in` binding maps a caller input/output port to a child input; an `out` binding maps a child output to a caller output. Both endpoints and the binding name the same Flow DataType; every required child input must be bound. Bindings never imply cross-scenario execution-context or ownership identity.
+- Nest `[[scenario.links]]` records with `id`, `source`, `target`, non-empty semantic `type`, and **required `category = "sequence" | "spawn" | "message" | "signal"`**. `sequence` stays in one executing thread (or one external actor). `spawn` targets a `start` event in a different executing thread and cannot itself be a loop. `message` carries data; `signal` communicates a wake/control condition. Neither implies that the sender awaits the receiver. Optional `label`, `guard`, `loop`, `timing`, and `delivery` annotate the relation.
+- `loop = true` requires a guard and marks an intentional causal back-edge. Sequence repeats stay inside their executing thread. A cyclic message/signal handoff can be guarded as repeated delivery, but must not masquerade as that thread's execution loop. A `decision` needs at least two distinct guarded outgoing non-loop branches; a `join` needs at least two incoming non-loop links. A `terminate` event cannot have an outgoing sequence link.
+- Every reference must resolve; every scenario not called as a subflow must say `entrypoint = true`. Unknown fields, invalid execution contexts/counts, unmarked causal cycles, duplicate IDs, and broken bindings are errors, not partially renderable graphs. Deliberately deferred paths are not gaps.
 
-See the synthetic CLI/service sample at `skills/vis-map/tests/fixtures/intended-flows.md` for the complete syntax. Do not copy it as a real-repository model.
+Focused containment syntax (inside the Scenarios TOML block):
+
+```toml
+[[scenario.processes]]
+id = "main-process"
+name = "Main application process"
+
+[[scenario.threads]]
+id = "reconciler"
+name = "Reconciler thread"
+process = "main-process"
+daemon = true
+
+[[scenario.events]]
+id = "read-actual"
+title = "Read registry snapshot"
+participant = "registry"
+thread = "reconciler"
+kind = "action"
+```
+
+See `../vis-map/tests/fixtures/execution-flows.md` for a complete synthetic version-2 example and `../vis-map/tests/fixtures/intended-flows.md` for legacy version-1 syntax. Do not copy fixtures as a real-repository model.
 
 ## Guidance and implementation
 
