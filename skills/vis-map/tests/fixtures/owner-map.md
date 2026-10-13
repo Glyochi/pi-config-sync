@@ -1,24 +1,27 @@
+<!-- map-format: compact-v1 -->
+
 # Sample application
 - **Type**: Entity
-- **Importance**: Critical
-- **Responsibilities**: Synthetic MAP regression fixture.
+- **Responsibilities**: Application boundary.
 
 ## Runtime
 - **Type**: Entity
-- **Importance**: Significant
-- **Responsibilities**: Owns a worker.
+- **Responsibilities**: Coordinates requests.
 
 ### Worker
 - **Type**: Entity
-- **Importance**: Peripheral
-- **Responsibilities**: Handles a request.
+- **Responsibilities**: Performs a unit of work.
+
+## Utilities
+- **Type**: Entity
+- **Responsibilities**: Standalone helper branch.
 
 ## DataTypes
 
 ### Request
 - **Type**: DataType
-- **Format**: JSON schema
-- **Schema**: { "id": "string" }
+- **Format**: text summary
+- **Schema**: Request payload.
 
 ## Relationships
 

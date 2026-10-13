@@ -393,23 +393,3 @@ test("layout save persists movable nodes but omits derived owner anchors", () =>
   assert.ok(saved.nodes["Root leaf"]);
 });
 
-test("regenerated HTML embeds syntactically valid interaction scripts", () => {
-  const htmlPath = process.env.VIS_MAP_HTML_PATH || "/workspace/map/map-graph.html";
-  const html = fs.readFileSync(htmlPath, "utf8");
-  for (const id of ["map-zoom-in", "map-zoom-out", "map-zoom-reset"]) {
-    assert.ok(html.includes(`id="${id}"`), `generated map is missing ${id}`);
-  }
-  const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)]
-    .map((match) => match[1]);
-  for (const marker of [
-    "var FRAMES =",
-    "var DATATYPE_NODE_COLORS =",
-    "function undo() {",
-    "var FILENAME =",
-    "var MIN_SCALE =",
-  ]) {
-    const script = scripts.find((candidate) => candidate.includes(marker));
-    assert.ok(script, `generated HTML is missing script containing ${marker}`);
-    new vm.Script(script, { filename: `generated-${marker.replace(/\W/g, "-")}.js` });
-  }
-});

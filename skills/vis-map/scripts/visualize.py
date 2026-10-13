@@ -43,12 +43,10 @@ ENTITY_SHAPE = "box"
 DATATYPE_SHAPE = "diamond"
 UNKNOWN_NODE_SHAPE = "ellipse"
 
-# Entity importance palette: a sequential ramp, strongest -> palest, with hue
-# drifting red -> amber. Importance is ordinal, so the palette varies lightness
-# monotonically (the one visual variable every reader can order, including with
-# colour-vision deficiency and in greyscale) while chroma falls off too. Every
-# step keeps >= 4.5:1 contrast against the default black label (WCAG AA).
-IMPORTANCE_PALETTE = [
+# Entity abstraction palette: higher-level concepts are stronger; deeper
+# containment levels become paler. The sequential luminance ramp remains
+# distinguishable in greyscale and each step keeps >= 4.5:1 text contrast.
+ABSTRACTION_PALETTE = [
     ("strong red", "#E75C40"),   # contrast 6.00
     ("red", "#E27757"),          # 7.01
     ("soft red", "#DD8E6D"),     # 8.16
@@ -62,23 +60,6 @@ IMPORTANCE_PALETTE = [
 ]
 
 ENTITY_DEFAULT_COLOR = "#E3E2DE"
-
-# Canonical importance order, highest -> lowest. The scale the map skill starts
-# with (Critical / Significant / Peripheral) is pinned first; any other tier the
-# user steers in is ranked after these, in order of first appearance.
-IMPORTANCE_ORDER = [
-    "critical",
-    "very high",
-    "high",
-    "significant",
-    "medium",
-    "moderate",
-    "peripheral",
-    "low",
-    "minor",
-    "trivial",
-]
-IMPORTANCE_RANK = {tier: rank for rank, tier in enumerate(IMPORTANCE_ORDER)}
 
 # Unknown node types are categorical, not ordinal, so they get a deterministic
 # light color from a qualitative (hue-distinct) palette rather than the ramp.
@@ -143,7 +124,7 @@ EDGE_STYLE_PRESETS = {
 }
 
 # Hex colors render correctly but read poorly in the legend, so they are mapped
-# to plain English names. The importance palette carries its own names.
+# to plain English names. The abstraction palette carries its own names.
 COLOR_NAMES = {
     "#2B7CE9": "blue",
     "#A020F0": "purple",
@@ -151,10 +132,11 @@ COLOR_NAMES = {
     DATATYPE_REFERENCE_HIGHLIGHT_BACKGROUND: "pale yellow",
     DATATYPE_REFERENCE_HIGHLIGHT_BORDER: "orange",
 }
-COLOR_NAMES.update({color: name for name, color in IMPORTANCE_PALETTE})
+COLOR_NAMES.update({color: name for name, color in ABSTRACTION_PALETTE})
 COLOR_NAMES.update({color: name for name, color in NODE_FALLBACK_PALETTE})
 
 OPTIONS = {
+    "layout": {"randomSeed": 1729},
     "physics": {
         "enabled": True,
         "solver": "forceAtlas2Based",
@@ -1030,41 +1012,47 @@ def parse_relationships(lines):
 # Styling
 # ---------------------------------------------------------------------------
 
-def order_importance_tiers(tiers):
-    """Return ordered importance tiers and their assigned colors."""
-    unique = {}
-    for tier in tiers:
-        if tier:
-            label = tier.strip()
-            if label:
-                unique.setdefault(label.lower(), label)
+def entity_abstraction_depths(entities):
+    """Derive levels only for Entities that participate in containment."""
+    entity_by_name = {entity["name"]: entity for entity in entities
+                      if entity["type"] == "Entity"}
+    children = {name: [] for name in entity_by_name}
+    for name, entity in entity_by_name.items():
+        parent = entity["parent"]
+        if parent in children:
+            children[parent].append(name)
 
-    first_seen = {key: index for index, key in enumerate(unique)}
-
-    def sort_key(tier):
-        key = tier.lower()
-        if key in IMPORTANCE_RANK:
-            return 0, IMPORTANCE_RANK[key]
-        return 1, first_seen[key]
-
-    ordered = sorted(unique.values(), key=sort_key)
-    last_color = len(IMPORTANCE_PALETTE) - 1
-    tier_colors = {}
-    for index, tier in enumerate(ordered):
-        color_index = (
-            0
-            if len(ordered) <= 1
-            else round(index * last_color / (len(ordered) - 1))
-        )
-        tier_colors[tier.lower()] = IMPORTANCE_PALETTE[color_index][1]
-    return ordered, tier_colors
+    depths = {}
+    for name, entity in entity_by_name.items():
+        parent = entity["parent"]
+        if parent not in entity_by_name and not children[name]:
+            continue
+        depth, seen = 0, {name}
+        while parent in entity_by_name and parent not in seen:
+            depth += 1
+            seen.add(parent)
+            parent = entity_by_name[parent]["parent"]
+        depths[name] = depth
+    return depths
 
 
-def entity_color(importance, tier_colors):
-    """Return a readable entity color for its importance tier."""
-    if not importance:
+def abstraction_depth_colors(depths):
+    """Assign a deterministic sequential color to each represented depth."""
+    levels = sorted(set(depths.values()))
+    if not levels:
+        return {}
+    last_color = len(ABSTRACTION_PALETTE) - 1
+    return {
+        level: ABSTRACTION_PALETTE[min(level, last_color)][1]
+        for level in levels
+    }
+
+
+def entity_color(abstraction_depth, depth_colors):
+    """Return the color for a containment depth, or the neutral unranked style."""
+    if abstraction_depth is None:
         return ENTITY_DEFAULT_COLOR
-    return tier_colors.get(importance.strip().lower(), ENTITY_DEFAULT_COLOR)
+    return depth_colors.get(abstraction_depth, ENTITY_DEFAULT_COLOR)
 
 
 def fallback_node_color(type_name):
@@ -1079,11 +1067,11 @@ def fallback_edge_color(type_name):
     return EDGE_FALLBACK_PALETTE[idx]
 
 
-def node_style(node_type, fields, tier_colors):
+def node_style(node_type, fields, depth_colors, abstraction_depth=None):
     if node_type == "Entity":
         return {
             "shape": ENTITY_SHAPE,
-            "color": entity_color(fields.get("Importance"), tier_colors),
+            "color": entity_color(abstraction_depth, depth_colors),
         }
     preset = NODE_STYLE_PRESETS.get(node_type)
     if preset is not None:
@@ -1113,10 +1101,13 @@ def color_label(color):
     return COLOR_NAMES.get(key, color)
 
 
-def node_title(name, node_type, fields):
+def node_title(name, node_type, fields, abstraction_depth=None):
     lines = [name, "Type: " + node_type]
+    if node_type == "Entity" and abstraction_depth is not None:
+        lines.append("Abstraction level: {}".format(abstraction_depth + 1))
     for k, v in fields.items():
-        lines.append("{}: {}".format(k, v))
+        if k.lower() != "importance":
+            lines.append("{}: {}".format(k, v))
     return "\n".join(lines)
 
 
@@ -1371,12 +1362,12 @@ DATATYPE_REFERENCE_JS = """
       var matches = false;
       if (kind === "node-type") {
         matches = String(node.mapType) === value;
-      } else if (kind === "importance") {
+      } else if (kind === "abstraction-depth") {
         matches = node.mapType === "Entity"
-          && String(node.mapImportance) === value;
-      } else if (kind === "unrated-entity") {
+          && String(node.mapAbstractionDepth) === value;
+      } else if (kind === "unranked-entity") {
         matches = node.mapType === "Entity"
-          && !node.mapImportance;
+          && (node.mapAbstractionDepth === null || node.mapAbstractionDepth === undefined);
       }
       if (!matches) return;
       var nodeId = String(node.id);
@@ -1706,7 +1697,7 @@ def build_containment_frames(entities):
     return frames
 
 
-def build_graph(entities, datatypes, relationships, tier_colors):
+def build_graph(entities, datatypes, relationships, depth_colors, abstraction_depths):
     containment_frames = build_containment_frames(entities)
     container_owners = {frame["owner"] for frame in containment_frames}
     net = Network(
@@ -1720,17 +1711,17 @@ def build_graph(entities, datatypes, relationships, tier_colors):
     known_nodes = set()
     descriptions = {}
 
-    def add_node(name, node_type, fields, container=False):
-        style = node_style(node_type, fields, tier_colors)
+    def add_node(name, node_type, fields, container=False, abstraction_depth=None):
+        style = node_style(node_type, fields, depth_colors, abstraction_depth)
         known_nodes.add(name)
         node_types[node_type] = style
-        descriptions[name] = node_title(name, node_type, fields)
+        descriptions[name] = node_title(name, node_type, fields, abstraction_depth)
         options = {
             "label": name,
             "shape": style["shape"],
             "color": style["color"],
             "mapType": node_type,
-            "mapImportance": fields.get("Importance", ""),
+            "mapAbstractionDepth": abstraction_depth,
             "mapBaseColor": style["color"],
             "mapContainer": container,
             "mapFrameHighlighted": False,
@@ -1801,6 +1792,7 @@ def build_graph(entities, datatypes, relationships, tier_colors):
             e["type"],
             e["fields"],
             container=e["name"] in container_owners,
+            abstraction_depth=abstraction_depths.get(e["name"]),
         )
 
     for e in entities:
@@ -1913,7 +1905,7 @@ def legend_row(sample, label, indent=0, target_kind=None, target_value=""):
 
 
 def build_legend(
-    node_types, edge_types, entity_tiers, tier_colors, has_unrated_entities=False
+    node_types, edge_types, abstraction_levels, depth_colors, has_unranked_entities=False
 ):
     parts = [
         '<div class="map-legend" '
@@ -1928,93 +1920,63 @@ def build_legend(
         if node_type == "Entity":
             parts.append(legend_row(
                 "",
-                "<b>Entity</b> — box or owner frame; color by importance",
+                "<b>Entity</b> — box or owner frame; color by containment depth",
                 target_kind="node-type",
                 target_value="Entity",
             ))
-            entity_colors = [
-                (tier, entity_color(tier, tier_colors), "importance")
-                for tier in entity_tiers
-            ]
-            if has_unrated_entities or not entity_colors:
-                entity_colors.append((
-                    "No importance", ENTITY_DEFAULT_COLOR, "unrated-entity"
-                ))
-            for tier, color, target_kind in entity_colors:
-                label = "{} — {}".format(
-                    html_escape(tier), html_escape(color_label(color))
+            for depth in abstraction_levels:
+                label = "Level {}{} — {}".format(
+                    depth + 1,
+                    " (highest)" if depth == min(abstraction_levels) else "",
+                    html_escape(color_label(depth_colors[depth])),
                 )
                 parts.append(legend_row(
-                    node_swatch(ENTITY_SHAPE, color),
-                    label,
-                    indent=18,
-                    target_kind=target_kind,
-                    target_value="" if target_kind == "unrated-entity" else tier,
+                    node_swatch(ENTITY_SHAPE, depth_colors[depth]), label,
+                    indent=18, target_kind="abstraction-depth", target_value=str(depth),
+                ))
+            if has_unranked_entities or not abstraction_levels:
+                parts.append(legend_row(
+                    node_swatch(ENTITY_SHAPE, ENTITY_DEFAULT_COLOR),
+                    "Not ranked — no containment hierarchy", indent=18,
+                    target_kind="unranked-entity", target_value="",
                 ))
             continue
 
         label = "<b>{}</b> — {}, {}".format(
-            html_escape(node_type),
-            html_escape(style["shape"]),
+            html_escape(node_type), html_escape(style["shape"]),
             html_escape(color_label(style["color"])),
         )
         parts.append(legend_row(
-            node_swatch(style["shape"], style["color"]),
-            label,
-            target_kind="node-type",
-            target_value=node_type,
+            node_swatch(style["shape"], style["color"]), label,
+            target_kind="node-type", target_value=node_type,
         ))
 
     parts.append("<b>Relationships</b><br>")
     for edge_type, style in sorted(edge_types.items()):
         if edge_type == "Contains":
-            label = "<b>Contains</b> — owner frame; color by importance"
+            label = "<b>Contains</b> — owner frame; fill follows containment depth"
             sample = containment_swatch(CONTAINMENT_FRAME_BORDER_COLOR)
         else:
             label = "<b>{}</b> — {}, {}".format(
-                html_escape(edge_type),
-                html_escape(dashes_label(style["dashes"])),
+                html_escape(edge_type), html_escape(dashes_label(style["dashes"])),
                 html_escape(color_label(style["color"])),
             )
             sample = edge_swatch(style["color"], style["dashes"])
-        parts.append(legend_row(
-            sample,
-            label,
-            target_kind="edge-type",
-            target_value=edge_type,
-        ))
+        parts.append(legend_row(sample, label, target_kind="edge-type", target_value=edge_type))
 
     highlight_sample = (
         '<span style="display:inline-flex;align-items:center;gap:4px;">'
-        + node_swatch(
-            DATATYPE_SHAPE,
-            DATATYPE_REFERENCE_HIGHLIGHT_BACKGROUND,
-            DATATYPE_REFERENCE_HIGHLIGHT_BORDER,
-            DATATYPE_REFERENCE_HIGHLIGHT_BORDER_WIDTH,
-        )
-        + edge_swatch(
-            DATATYPE_REFERENCE_HIGHLIGHT_BORDER,
-            False,
-            DATATYPE_REFERENCE_HIGHLIGHT_EDGE_WIDTH,
-        )
-        + containment_swatch(
-            DATATYPE_REFERENCE_HIGHLIGHT_BORDER,
-            DATATYPE_REFERENCE_HIGHLIGHT_EDGE_WIDTH,
-        )
+        + node_swatch(DATATYPE_SHAPE, DATATYPE_REFERENCE_HIGHLIGHT_BACKGROUND,
+                      DATATYPE_REFERENCE_HIGHLIGHT_BORDER, DATATYPE_REFERENCE_HIGHLIGHT_BORDER_WIDTH)
+        + edge_swatch(DATATYPE_REFERENCE_HIGHLIGHT_BORDER, False, DATATYPE_REFERENCE_HIGHLIGHT_EDGE_WIDTH)
+        + containment_swatch(DATATYPE_REFERENCE_HIGHLIGHT_BORDER, DATATYPE_REFERENCE_HIGHLIGHT_EDGE_WIDTH)
         + "</span>"
     )
-    highlight_label = (
-        "<b>Reference/frame highlight</b> — {} fill, {} border/line/frame"
-    ).format(
+    highlight_label = "<b>Reference/frame highlight</b> — {} fill, {} border/line/frame".format(
         html_escape(color_label(DATATYPE_REFERENCE_HIGHLIGHT_BACKGROUND)),
         html_escape(color_label(DATATYPE_REFERENCE_HIGHLIGHT_BORDER)),
     )
-    parts.append(legend_row(
-        highlight_sample,
-        highlight_label,
-        target_kind="references",
-        target_value="all",
-    ))
+    parts.append(legend_row(highlight_sample, highlight_label, target_kind="references", target_value="all"))
     parts.append("</div>")
     return "".join(parts)
 
@@ -2095,6 +2057,9 @@ def apply_saved_layout(net, positions):
     return applied
 
 
+MAP_FORMAT_MARKER = "<!-- map-format: compact-v1 -->"
+
+
 def render_map(input_path, output_path):
     if Network is None:
         print("Error: pyvis is not installed. Run: pip install pyvis", file=sys.stderr)
@@ -2111,14 +2076,22 @@ def render_map(input_path, output_path):
         )
         sys.exit(1)
 
+    first_content = next((line.strip() for line in lines if line.strip()), "")
+    if first_content != MAP_FORMAT_MARKER:
+        print(
+            "Error: {} uses an unsupported MAP format; ask /map to replace it from scratch (no conversion performed).".format(input_path),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     entity_lines, datatype_lines, relationship_lines = split_sections(lines)
     entities = parse_entities(entity_lines)
     datatypes = parse_datatypes(datatype_lines)
     relationships = parse_relationships(relationship_lines)
 
-    entity_tiers, tier_colors = order_importance_tiers(
-        e["fields"].get("Importance") for e in entities
-    )
+    abstraction_depths = entity_abstraction_depths(entities)
+    depth_colors = abstraction_depth_colors(abstraction_depths)
+    abstraction_levels = sorted(depth_colors)
     (
         net,
         node_types,
@@ -2126,7 +2099,7 @@ def render_map(input_path, output_path):
         descriptions,
         datatype_node_colors,
         containment_frames,
-    ) = build_graph(entities, datatypes, relationships, tier_colors)
+    ) = build_graph(entities, datatypes, relationships, depth_colors, abstraction_depths)
     saved_positions = load_saved_layout(layout_path)
     applied_positions = apply_saved_layout(net, saved_positions)
     if applied_positions:
@@ -2144,15 +2117,16 @@ def render_map(input_path, output_path):
 
     with open(output_path, "r", encoding="utf-8") as f:
         html = f.read()
-    has_unrated_entities = any(
-        not e["fields"].get("Importance") for e in entities
+    has_unranked_entities = any(
+        e["type"] == "Entity" and e["name"] not in abstraction_depths
+        for e in entities
     )
     legend = build_legend(
         node_types,
         edge_types,
-        entity_tiers,
-        tier_colors,
-        has_unrated_entities,
+        abstraction_levels,
+        depth_colors,
+        has_unranked_entities,
     )
     # Prevent map content from closing the injected script element.
     descriptions_json = json.dumps(descriptions).replace("<", r"\u003c")
@@ -2250,7 +2224,7 @@ def main():
     map_path, flows_path = "map/MAP.md", "map/FLOWS.md"
     has_map, has_flows = os.path.isfile(map_path), os.path.isfile(flows_path)
     if not has_map and not has_flows:
-        print("Error: neither map/MAP.md nor map/FLOWS.md exists. Run /map for an ownership map or request an intended runtime-flow model.", file=sys.stderr)
+        print("Nothing to render: neither map/MAP.md nor map/FLOWS.md exists.", file=sys.stderr)
         return 1
 
     flow_failed = False

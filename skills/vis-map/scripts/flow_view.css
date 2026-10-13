@@ -1,0 +1,62 @@
+:root { font:14px/1.45 system-ui,sans-serif; color:#1e293b; background:#f8fafc; }
+* { box-sizing:border-box }
+body { margin:0; min-width:760px }
+button { font:inherit; cursor:pointer; color:inherit }
+header { display:flex; align-items:center; gap:16px; padding:12px 18px; background:white; border-bottom:1px solid #cbd5e1 }
+header h1 { font-size:18px; margin:0 }
+.north-star,.note { color:#64748b; font-size:11px }
+.navigation { margin-left:auto; display:flex; align-items:center; gap:8px }
+.navigation button,.scenario-button,.detail-action,.layout-tools button { padding:5px 9px; border:1px solid #94a3b8; border-radius:4px; background:white }
+.navigation button:disabled { opacity:.45; cursor:default }
+#breadcrumbs { display:flex; gap:5px; align-items:center }
+#breadcrumbs button { border:0; color:#1d4ed8; background:transparent; text-decoration:underline }
+.layout { display:grid; grid-template-columns:220px minmax(420px,1fr) 280px; min-height:calc(100vh - 55px) }
+aside { padding:12px; background:white; overflow:auto }
+aside h2 { font-size:14px; margin:0 0 8px }
+#scenario-sidebar { border-right:1px solid #cbd5e1 }
+#details { border-left:1px solid #cbd5e1 }
+.scenario-button { display:block; width:100%; text-align:left; margin:5px 0; border-color:transparent }
+.scenario-button.active { background:#dbeafe; border-color:#60a5fa }
+.scenario-role { display:block; font-size:11px; color:#64748b }
+main { min-width:0; padding:14px }
+#scenario-summary { padding:0 4px 12px }
+#scenario-summary h2 { margin:0; font-size:19px }
+#scenario-summary p { margin:4px 0; color:#475569 }
+.graph-shell { width:100%; height:calc(100vh - 150px); min-height:440px; overflow:auto; overscroll-behavior:contain; background:white; border:1px solid #cbd5e1; cursor:grab }
+#flow-graph { display:block }
+.graph-shell[data-panning="true"],.graph-shell[data-panning="true"] #flow-graph,.graph-shell[data-panning="true"] #flow-graph * { cursor:grabbing!important }
+.zoom-hint { color:#64748b; font-size:10px; white-space:nowrap }
+.layout-tools { display:flex; align-items:center; gap:8px; margin-left:auto }
+#layout-status { max-width:240px; color:#64748b; font-size:10px }
+.flow-frame > rect { fill:#f8fafc; fill-opacity:.98; stroke:#718096; stroke-width:1.5; rx:12 }
+.flow-frame.selected > rect { stroke:#d97706; stroke-width:3 }
+.frame-header { cursor:move; outline:none }
+.frame-header:focus .frame-label { fill:#b45309 }
+.frame-label { fill:#334155; font-size:13px; font-weight:700 }
+.flow-step { cursor:grab; outline:none; touch-action:none }
+.flow-step:active { cursor:grabbing }
+.step-shape { fill:#eff6ff; stroke:#2563eb; stroke-width:2 }
+.flow-step.selected .step-shape,.flow-step:focus .step-shape { stroke:#0f172a; stroke-width:4 }
+.step-title { fill:#0f172a; font-size:13px; font-weight:650; pointer-events:none }
+.step-actor { fill:#475569; font-size:10px; pointer-events:none }
+.edge-path { fill:none; stroke:#475569; stroke-width:2.3; marker-end:url(#flow-arrow) }
+.edge-path.repeat { stroke:#b91c1c; stroke-dasharray:8 5 }
+.edge-hit { fill:none; stroke:transparent; stroke-width:18; cursor:pointer }
+.edge-label { font-size:10px; fill:#334155; paint-order:stroke; stroke:white; stroke-width:4px; stroke-linejoin:round; pointer-events:none }
+.flow-link.selected .edge-path { stroke-width:4 }
+.subscenario-button { cursor:pointer }
+.subscenario-button rect { fill:white; stroke:#6366f1 }
+.subscenario-button text { fill:#3730a3; font-size:10px }
+#details h3 { margin:0 0 8px; font-size:16px }
+#details h4 { margin:14px 0 4px; font-size:12px }
+#details p { margin:5px 0; overflow-wrap:anywhere }
+#details dl { display:grid; grid-template-columns:75px 1fr; gap:4px; margin:7px 0 }
+#details dt { color:#64748b }
+#details dd { margin:0; overflow-wrap:anywhere }
+#details ul { padding-left:20px; margin:5px 0 }
+.detail-action { margin-top:8px; color:#1d4ed8 }
+.badge { display:inline-block; padding:1px 5px; border:1px solid #94a3b8; border-radius:10px; color:#475569; font-size:10px }
+@media(max-width:1050px) {
+  .layout { grid-template-columns:180px minmax(400px,1fr) }
+  #details { grid-column:1/-1; border-left:0; border-top:1px solid #cbd5e1 }
+}
