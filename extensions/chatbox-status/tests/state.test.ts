@@ -30,6 +30,49 @@ test("interrupted runs retain their measured duration and outcome", () => {
 	assert.deepEqual(state.last, { durationMs: 400, outcome: "aborted" });
 });
 
+test("settled runs keep only the final assistant generation's model and thinking level", () => {
+	let state = startAgentRun(emptyModelTimeState());
+	state = startModelGeneration(state, 0, { model: "model-a", thinkingLevel: "high" });
+	state = finishModelGeneration(state, 2_000);
+	state = startModelGeneration(state, 10_000, { model: "model-b", thinkingLevel: "low" });
+	state = settleAgentRun(state, "completed", 15_000);
+	assert.deepEqual(state.last, {
+		durationMs: 7_000,
+		outcome: "completed",
+		model: "model-b",
+		thinkingLevel: "low",
+	});
+});
+
+test("missing metadata on the final generation does not fall back to an earlier generation", () => {
+	let state = startAgentRun(emptyModelTimeState());
+	state = startModelGeneration(state, 0, { model: "model-a", thinkingLevel: "high" });
+	state = finishModelGeneration(state, 1_000);
+	state = startModelGeneration(state, 2_000, { model: "model-b" });
+	state = settleAgentRun(state, "completed", 3_000);
+	assert.deepEqual(state.last, {
+		durationMs: 2_000,
+		outcome: "completed",
+		model: "model-b",
+	});
+});
+
+test("a new run resets duration and omits metadata missing from its final generation", () => {
+	let state = startAgentRun(emptyModelTimeState());
+	state = startModelGeneration(state, 0, { model: "previous-model", thinkingLevel: "high" });
+	state = settleAgentRun(state, "completed", 2_000);
+	assert.equal(state.last?.durationMs, 2_000);
+
+	state = startAgentRun(state);
+	state = startModelGeneration(state, 10_000, { model: "final-model" });
+	state = settleAgentRun(state, "completed", 15_000);
+	assert.deepEqual(state.last, {
+		durationMs: 5_000,
+		outcome: "completed",
+		model: "final-model",
+	});
+});
+
 test("starting another run keeps the previous settled result until replacement settles", () => {
 	let state = startAgentRun(emptyModelTimeState());
 	state = settleAgentRun(state, "error", 25);

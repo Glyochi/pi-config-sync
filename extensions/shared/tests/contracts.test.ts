@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+	ASK_USER_BLOCKED_EVENT,
 	COMPOSER_STATUS_EVENT,
+	isAskUserBlockedEventPayload,
 	isComposerStatusSnapshot,
 	isModeStateSnapshot,
 	isPermissionsStateSnapshot,
@@ -45,6 +47,7 @@ const permissionsSnapshot = {
 };
 
 test("public state channels are versioned", () => {
+	assert.equal(ASK_USER_BLOCKED_EVENT, "rpiv:ask-user:blocked");
 	assert.equal(MODE_STATE_EVENT, "modes:state.v1");
 	assert.equal(PERMISSIONS_STATE_EVENT, "permissions:state.v1");
 	assert.equal(COMPOSER_STATUS_EVENT, "chatbox-status:composer.v1");
@@ -82,11 +85,27 @@ test("composer snapshots validate session-scoped display data", () => {
 	assert.equal(isComposerStatusSnapshot({ ...snapshot, sessionId: "" }), false);
 });
 
-test("timing entry data validates duration, outcome, and optional mode", () => {
+test("timing entry data accepts legacy entries and validates optional generation metadata", () => {
 	assert.equal(isTimingEntryData({ schemaVersion: 1, durationMs: 123.4, outcome: "completed" }), true);
 	assert.equal(isTimingEntryData({ schemaVersion: 1, durationMs: 123.4, outcome: "completed", mode: "ask" }), true);
+	assert.equal(isTimingEntryData({
+		schemaVersion: 1,
+		durationMs: 123.4,
+		outcome: "completed",
+		model: "anthropic/claude-sonnet-4",
+		thinkingLevel: "high",
+	}), true);
+	assert.equal(isTimingEntryData({ schemaVersion: 1, durationMs: 123.4, outcome: "completed", model: " " }), false);
+	assert.equal(isTimingEntryData({ schemaVersion: 1, durationMs: 123.4, outcome: "completed", thinkingLevel: 3 }), false);
 	assert.equal(isTimingEntryData({ schemaVersion: 1, durationMs: 123.4, outcome: "completed", mode: "other" }), false);
 	assert.equal(isTimingEntryData({ schemaVersion: 1, durationMs: -1, outcome: "completed" }), false);
 	assert.equal(isTimingEntryData({ schemaVersion: 1, durationMs: Number.NaN, outcome: "error" }), false);
 	assert.equal(isTimingEntryData({ schemaVersion: 1, durationMs: 10, outcome: "unknown" }), false);
+});
+
+test("ask-user blocked events validate their active flag", () => {
+	assert.equal(isAskUserBlockedEventPayload({ active: true }), true);
+	assert.equal(isAskUserBlockedEventPayload({ active: false }), true);
+	assert.equal(isAskUserBlockedEventPayload({ active: "true" }), false);
+	assert.equal(isAskUserBlockedEventPayload(null), false);
 });

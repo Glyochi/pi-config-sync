@@ -12,11 +12,15 @@ export function formatDuration(milliseconds: number): string {
 export interface ModelTimeResult {
 	durationMs: number;
 	outcome: AgentOutcome;
+	model?: string;
+	thinkingLevel?: string;
 }
 
 export interface ActiveModelTime {
 	accumulatedMs: number;
 	generationStartedAt?: number;
+	model?: string;
+	thinkingLevel?: string;
 }
 
 export interface ModelTimeState {
@@ -34,12 +38,26 @@ export function startAgentRun(state: ModelTimeState): ModelTimeState {
 }
 
 /** Begin counting only while Pi is streaming an assistant generation. */
-export function startModelGeneration(state: ModelTimeState, now: number): ModelTimeState {
-	if (!state.current || state.current.generationStartedAt !== undefined) return state;
+export function startModelGeneration(
+	state: ModelTimeState,
+	now: number,
+	metadata: { model?: string; thinkingLevel?: string } = {},
+): ModelTimeState {
+	const current = state.current;
+	if (!current || current.generationStartedAt !== undefined) return state;
 	return {
 		...state,
-		current: { ...state.current, generationStartedAt: now },
+		current: {
+			accumulatedMs: current.accumulatedMs,
+			generationStartedAt: now,
+			...(isNonEmptyString(metadata.model) ? { model: metadata.model } : {}),
+			...(isNonEmptyString(metadata.thinkingLevel) ? { thinkingLevel: metadata.thinkingLevel } : {}),
+		},
 	};
+}
+
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value.trim().length > 0;
 }
 
 /** End one generation interval; tool execution and user-facing prompts are not counted. */
@@ -50,6 +68,8 @@ export function finishModelGeneration(state: ModelTimeState, now: number): Model
 		...state,
 		current: {
 			accumulatedMs: current.accumulatedMs + Math.max(0, now - current.generationStartedAt),
+			...(current.model ? { model: current.model } : {}),
+			...(current.thinkingLevel ? { thinkingLevel: current.thinkingLevel } : {}),
 		},
 	};
 }
@@ -64,7 +84,13 @@ export function currentModelTimeMs(state: ModelTimeState, now: number): number |
 export function settleAgentRun(state: ModelTimeState, outcome: AgentOutcome, now: number): ModelTimeState {
 	if (!state.current) return state;
 	const finished = finishModelGeneration(state, now);
+	const current = finished.current;
 	return {
-		last: { durationMs: finished.current?.accumulatedMs ?? 0, outcome },
+		last: {
+			durationMs: current?.accumulatedMs ?? 0,
+			outcome,
+			...(current?.model ? { model: current.model } : {}),
+			...(current?.thinkingLevel ? { thinkingLevel: current.thinkingLevel } : {}),
+		},
 	};
 }

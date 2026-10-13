@@ -16,6 +16,7 @@ export const COMPOSER_STATUS_EVENT = "chatbox-status:composer.v1";
 export const COMPOSER_STATUS_VERSION = 1 as const;
 export const COMPOSER_PLAN_SUMMARY_MAX_CHARS = 420;
 export const CHATBOX_TIMING_ENTRY_TYPE = "chatbox-status-timing";
+export const ASK_USER_BLOCKED_EVENT = "rpiv:ask-user:blocked";
 
 export type Mode = "ask" | "plan" | "build";
 export type PlanStatus = "open" | "completed" | "blocked";
@@ -112,6 +113,15 @@ export interface TimingEntryData {
 	outcome: "completed" | "aborted" | "error";
 	/** Optional for compatibility with existing v1 entries created before mode was recorded. */
 	mode?: Mode;
+	/** Optional for compatibility with older entries; the final assistant generation's model ID. */
+	model?: string;
+	/** Optional for compatibility with older entries; the final assistant generation's thinking level. */
+	thinkingLevel?: string;
+}
+
+/** Payload emitted while ask_user_question is waiting for user input. */
+export interface AskUserBlockedEventPayload {
+	active: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -195,5 +205,11 @@ export function isTimingEntryData(value: unknown): value is TimingEntryData {
 	if (!isRecord(value)) return false;
 	return value.schemaVersion === 1 && typeof value.durationMs === "number" && Number.isFinite(value.durationMs) &&
 		value.durationMs >= 0 && (value.outcome === "completed" || value.outcome === "aborted" || value.outcome === "error") &&
-		(value.mode === undefined || isMode(value.mode));
+		(value.mode === undefined || isMode(value.mode)) &&
+		(value.model === undefined || isNonEmptyString(value.model)) &&
+		(value.thinkingLevel === undefined || isNonEmptyString(value.thinkingLevel));
+}
+
+export function isAskUserBlockedEventPayload(value: unknown): value is AskUserBlockedEventPayload {
+	return isRecord(value) && typeof value.active === "boolean";
 }

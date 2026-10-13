@@ -1,8 +1,10 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Key, matchesKey, Text } from "@earendil-works/pi-tui";
 import {
+	ASK_USER_BLOCKED_EVENT,
 	CHATBOX_TIMING_ENTRY_TYPE,
 	COMPOSER_STATUS_EVENT,
+	isAskUserBlockedEventPayload,
 	isModeStateSnapshot,
 	isPermissionsStateSnapshot,
 	isTimingEntryData,
@@ -25,6 +27,7 @@ import {
 	type AgentOutcome,
 	type ModelTimeState,
 } from "./state.ts";
+import { createAskUserEscapeHandler } from "./question-input.ts";
 
 const PENDING_SESSION_LIMIT = 4;
 
@@ -37,6 +40,8 @@ const pendingPermissionsSnapshots = new Map<string, PermissionsStateSnapshot>();
 let timing: ModelTimeState = emptyModelTimeState();
 let pendingOutcome: AgentOutcome = "completed";
 let runMode: Mode | undefined;
+let askUserQuestionBlocked = false;
+let removeQuestionEscapeListener: (() => void) | undefined;
 
 function sessionId(ctx: ExtensionContext): string {
 	return ctx.sessionManager.getSessionId() || "ephemeral";
@@ -107,17 +112,36 @@ function handlePermissionsSnapshot(pi: ExtensionAPI, payload: unknown): void {
 export default function chatboxStatusExtension(pi: ExtensionAPI): void {
 	const unsubscribeMode = pi.events.on(MODE_STATE_EVENT, (payload) => handleModeSnapshot(pi, payload));
 	const unsubscribePermissions = pi.events.on(PERMISSIONS_STATE_EVENT, (payload) => handlePermissionsSnapshot(pi, payload));
+	const unsubscribeAskUserBlocked = pi.events.on(ASK_USER_BLOCKED_EVENT, (payload) => {
+		if (isAskUserBlockedEventPayload(payload)) askUserQuestionBlocked = payload.active;
+	});
 
 	pi.registerEntryRenderer<TimingEntryData>(CHATBOX_TIMING_ENTRY_TYPE, (entry, _options, theme) => {
 		if (!isTimingEntryData(entry.data)) return undefined;
 		const data = entry.data;
 		const label = `Model time: ${formatDuration(data.durationMs)} · ${data.outcome}`;
 		const color = data.outcome === "completed" ? "dim" : data.outcome === "aborted" ? "warning" : "error";
+		const generationMetadata = [data.model, data.thinkingLevel].filter((value): value is string => Boolean(value));
+		const generationLabel = generationMetadata.length > 0
+			? theme.fg("dim", ` · ${generationMetadata.join(" · ")}`)
+			: "";
 		const modeLabel = data.mode ? ` · ${theme.fg(modeColorToken(data.mode), data.mode)}` : "";
-		return new Text(`${theme.fg(color, label)}${modeLabel}`, 0, 0);
+		return new Text(`${theme.fg(color, label)}${generationLabel}${modeLabel}`, 0, 0);
 	});
 
 	pi.on("session_start", (_event, ctx) => {
+		removeQuestionEscapeListener?.();
+		removeQuestionEscapeListener = undefined;
+		askUserQuestionBlocked = false;
+		if (ctx.mode === "tui") {
+			removeQuestionEscapeListener = ctx.ui.onTerminalInput(
+				createAskUserEscapeHandler(
+					() => askUserQuestionBlocked,
+					(data) => matchesKey(data, Key.escape),
+				),
+			);
+		}
+
 		const nextSessionId = sessionId(ctx);
 		if (activeSessionId !== nextSessionId) {
 			clearSessionState();
@@ -145,7 +169,10 @@ export default function chatboxStatusExtension(pi: ExtensionAPI): void {
 
 	pi.on("message_start", (event) => {
 		if (event.message.role !== "assistant" || !timing.current) return;
-		timing = startModelGeneration(timing, performance.now());
+		timing = startModelGeneration(timing, performance.now(), {
+			model: event.message.model,
+			thinkingLevel: event.message.thinkingLevel,
+		});
 	});
 
 	pi.on("message_end", (event) => {
@@ -169,13 +196,19 @@ export default function chatboxStatusExtension(pi: ExtensionAPI): void {
 				durationMs: result.durationMs,
 				outcome: result.outcome,
 				...(mode ? { mode } : {}),
+				...(result.model ? { model: result.model } : {}),
+				...(result.thinkingLevel ? { thinkingLevel: result.thinkingLevel } : {}),
 			});
 		}
 	});
 
-	pi.on("session_shutdown", (_event, ctx) => {
+	pi.on("session_shutdown", () => {
 		unsubscribeMode();
 		unsubscribePermissions();
+		unsubscribeAskUserBlocked();
+		removeQuestionEscapeListener?.();
+		removeQuestionEscapeListener = undefined;
+		askUserQuestionBlocked = false;
 		activeSessionId = undefined;
 		activeCwd = undefined;
 		clearSessionState();
