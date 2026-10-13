@@ -177,7 +177,10 @@ export default function chatboxStatusExtension(pi: ExtensionAPI): void {
 
 	pi.on("message_end", (event) => {
 		if (event.message.role !== "assistant" || !timing.current) return;
-		timing = finishModelGeneration(timing, performance.now());
+		timing = finishModelGeneration(timing, performance.now(), {
+			model: event.message.model,
+			thinkingLevel: event.message.thinkingLevel,
+		});
 	});
 
 	pi.on("agent_before_settle", (event) => {

@@ -44,6 +44,19 @@ test("settled runs keep only the final assistant generation's model and thinking
 	});
 });
 
+test("metadata available on the final assistant message is retained when it was missing at generation start", () => {
+	let state = startAgentRun(emptyModelTimeState());
+	state = startModelGeneration(state, 0, { model: "model-a" });
+	state = finishModelGeneration(state, 2_000, { model: "model-a", thinkingLevel: "high" });
+	state = settleAgentRun(state, "completed", 5_000);
+	assert.deepEqual(state.last, {
+		durationMs: 2_000,
+		outcome: "completed",
+		model: "model-a",
+		thinkingLevel: "high",
+	});
+});
+
 test("missing metadata on the final generation does not fall back to an earlier generation", () => {
 	let state = startAgentRun(emptyModelTimeState());
 	state = startModelGeneration(state, 0, { model: "model-a", thinkingLevel: "high" });

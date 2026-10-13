@@ -23,6 +23,11 @@ export interface ActiveModelTime {
 	thinkingLevel?: string;
 }
 
+export interface ModelGenerationMetadata {
+	model?: string;
+	thinkingLevel?: string;
+}
+
 export interface ModelTimeState {
 	current?: ActiveModelTime;
 	last?: ModelTimeResult;
@@ -41,7 +46,7 @@ export function startAgentRun(state: ModelTimeState): ModelTimeState {
 export function startModelGeneration(
 	state: ModelTimeState,
 	now: number,
-	metadata: { model?: string; thinkingLevel?: string } = {},
+	metadata: ModelGenerationMetadata = {},
 ): ModelTimeState {
 	const current = state.current;
 	if (!current || current.generationStartedAt !== undefined) return state;
@@ -61,15 +66,21 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 /** End one generation interval; tool execution and user-facing prompts are not counted. */
-export function finishModelGeneration(state: ModelTimeState, now: number): ModelTimeState {
+export function finishModelGeneration(
+	state: ModelTimeState,
+	now: number,
+	metadata: ModelGenerationMetadata = {},
+): ModelTimeState {
 	const current = state.current;
 	if (!current || current.generationStartedAt === undefined) return state;
+	const model = isNonEmptyString(metadata.model) ? metadata.model : current.model;
+	const thinkingLevel = isNonEmptyString(metadata.thinkingLevel) ? metadata.thinkingLevel : current.thinkingLevel;
 	return {
 		...state,
 		current: {
 			accumulatedMs: current.accumulatedMs + Math.max(0, now - current.generationStartedAt),
-			...(current.model ? { model: current.model } : {}),
-			...(current.thinkingLevel ? { thinkingLevel: current.thinkingLevel } : {}),
+			...(model ? { model } : {}),
+			...(thinkingLevel ? { thinkingLevel } : {}),
 		},
 	};
 }
