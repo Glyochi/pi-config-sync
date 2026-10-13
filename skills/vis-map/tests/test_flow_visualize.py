@@ -16,6 +16,9 @@ from flow_visualize import (  # noqa: E402
     FlowFormatError,
     layout_path_for_output,
     load_saved_layout,
+    FRAME_PADDING,
+    FRAME_NESTING_GAP,
+    CANVAS_MARGIN,
     parse_flows_file,
     parse_flows_text,
     render_flow_file,
@@ -111,6 +114,71 @@ class ScenarioFlowTests(unittest.TestCase):
         self.assertGreater(frames["request-path"]["right"], frames["handler-work"]["right"])
         self.assertLess(frames["request-path"]["top"], frames["handler-work"]["top"])
         self.assertEqual(frames["handler-work"]["step_ids"], ["handle", "return"])
+        max_depth = max(group["depth"] for group in request["groups"])
+        for frame in frames.values():
+            rightmost_node = max(positions[step_id]["x"] + 130 for step_id in frame["step_ids"])
+            expected_padding = FRAME_PADDING + (max_depth - frame["depth"]) * FRAME_NESTING_GAP
+            self.assertEqual(frame["right"] - rightmost_node, expected_padding)
+        self.assertEqual(FRAME_PADDING, 88)
+        self.assertEqual(FRAME_NESTING_GAP, 48)
+
+    def test_first_grouped_layout_keeps_peer_frames_and_nodes_disjoint(self):
+        source = """## Scenarios
+### Scenario: Process work
+#### Group: Main process
+##### Group: Main thread
+1. Start the service {#start}
+2. Serve requests {#serve}
+##### Group: Control thread
+3. Read worker status {#read-status}
+4. Update the registry {#update-registry}
+#### Group: Worker process
+##### Group: Worker thread
+5. Process data {#process}
+6. Stop the worker {#stop}
+"""
+        scenario = render_model(parse_flows_text(source))["scenarios"][0]
+        positions = scenario["layout"]["positions"]
+        frames = {frame["id"]: frame for frame in scenario["layout"]["frames"]}
+        groups = {group["id"]: group for group in scenario["groups"]}
+
+        def overlaps(a, b):
+            return (a["left"] < b["right"] and b["left"] < a["right"]
+                    and a["top"] < b["bottom"] and b["top"] < a["bottom"])
+
+        def node_bounds(step_id):
+            point = positions[step_id]
+            return {"left": point["x"] - 130, "right": point["x"] + 130,
+                    "top": point["y"] - 58, "bottom": point["y"] + 58}
+
+        def is_ancestor(ancestor, child):
+            parent = groups[child]["parent"]
+            while parent:
+                if parent == ancestor:
+                    return True
+                parent = groups[parent]["parent"]
+            return False
+
+        step_ids = list(positions)
+        for index, first in enumerate(step_ids):
+            for second in step_ids[index + 1:]:
+                self.assertFalse(overlaps(node_bounds(first), node_bounds(second)),
+                                 "steps {} and {} overlap".format(first, second))
+        frame_ids = list(frames)
+        for index, first in enumerate(frame_ids):
+            self.assertGreaterEqual(frames[first]["left"], CANVAS_MARGIN)
+            self.assertGreaterEqual(frames[first]["top"], CANVAS_MARGIN)
+            for second in frame_ids[index + 1:]:
+                if is_ancestor(first, second) or is_ancestor(second, first):
+                    continue
+                self.assertFalse(overlaps(frames[first], frames[second]),
+                                 "peer frames {} and {} overlap".format(first, second))
+        for step_id in step_ids:
+            for frame_id, frame in frames.items():
+                if step_id in frame["step_ids"]:
+                    continue
+                self.assertFalse(overlaps(node_bounds(step_id), frame),
+                                 "step {} overlaps unrelated frame {}".format(step_id, frame_id))
 
     def test_saved_layout_overrides_steps_and_ignores_stale_or_invalid_entries(self):
         flow = parse_flows_file(str(FIXTURE))

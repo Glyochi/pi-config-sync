@@ -10,8 +10,9 @@
   const index = get("scenario-index"), crumbs = get("breadcrumbs"), back = get("back-button");
   const layoutStatus = get("layout-status");
   let current = null, history = [], selectedStep = null, selectedLink = null, selectedFrame = null;
-  let dragging = null, panning = null, zoom = 1;
+  let dragging = null, panning = null, zoom = 1, panX = 0, panY = 0;
   const MIN_ZOOM = 0.4, MAX_ZOOM = 3, NODE_WIDTH = 260, NODE_HEIGHT = 116;
+  const FRAME_PADDING = 22 * 4, FRAME_NESTING_GAP = 12 * 4;
   const MIN_X = 180, MIN_Y = 160, MAX_COORD = 1000000;
 
   function el(tag, cls, value) {
@@ -52,6 +53,16 @@
   }
   function eventMap(s) { return Object.fromEntries(s.events.map(event => [event.id, event])); }
   function groupMap(s) { return Object.fromEntries(s.groups.map(group => [group.id, group])); }
+  function minimumStepPosition(s, id) {
+    const maxDepth = Math.max(0, ...s.groups.map(group => group.depth));
+    const padding = Math.max(0, ...s.groups
+      .filter(group => group.step_ids.includes(id))
+      .map(group => FRAME_PADDING + (maxDepth - group.depth) * FRAME_NESTING_GAP));
+    return {
+      x: Math.max(MIN_X, 60 + NODE_WIDTH / 2 + padding),
+      y: Math.max(MIN_Y, 60 + NODE_HEIGHT / 2 + padding + 34),
+    };
+  }
   function outgoing(s, id) { return s.links.filter(link => link.source === id); }
   function groupPath(s, groupId) {
     const groups = groupMap(s), names = [];
@@ -67,7 +78,7 @@
     s.layout.frames = s.groups.map(group => {
       const points = group.step_ids.map(id => s.layout.positions[id]).filter(Boolean);
       if (!points.length) return null;
-      const padding = 22 + (maxDepth - group.depth) * 12;
+      const padding = FRAME_PADDING + (maxDepth - group.depth) * FRAME_NESTING_GAP;
       return {
         id: group.id, name: group.name, parent: group.parent, depth: group.depth,
         step_ids: group.step_ids.slice(),
@@ -211,6 +222,7 @@
     graph.setAttribute("viewBox", `0 0 ${s.layout.width} ${s.layout.height}`);
     graph.setAttribute("width", Math.round(s.layout.width * zoom));
     graph.setAttribute("height", Math.round(s.layout.height * zoom));
+    applyPan();
     const defs = svg("defs");
     const marker = svg("marker", { id: "flow-arrow", markerWidth: 8, markerHeight: 8,
       refX: 7, refY: 4, orient: "auto" });
@@ -293,12 +305,22 @@
       y: (event.clientY - rect.top) * s.layout.height / (rect.height || s.layout.height) };
   }
   function beginStepDrag(event, id) {
+    if (event.shiftKey || event.button === 1) {
+      beginPan(event, true);
+      if (event.stopPropagation) event.stopPropagation();
+      return;
+    }
     if (event.button !== undefined && event.button !== 0) return;
     const s = scenarios[current], point = graphPoint(event, s), currentPoint = s.layout.positions[id];
     dragging = { kind: "step", scenario: current, ids: [id],
       offsets: { [id]: { x: currentPoint.x - point.x, y: currentPoint.y - point.y } } };
   }
   function beginFrameDrag(event, id) {
+    if (event.shiftKey || event.button === 1) {
+      beginPan(event, true);
+      if (event.stopPropagation) event.stopPropagation();
+      return;
+    }
     if (event.button !== undefined && event.button !== 0) return;
     const s = scenarios[current], group = groupMap(s)[id];
     if (!group) return;
@@ -319,26 +341,31 @@
     }
     return false;
   }
-  function beginPan(event) {
-    if (event.button !== undefined && event.button !== 0) return;
-    if (hasInteractiveGraphTarget(event.target)) return;
-    panning = { x: event.clientX, y: event.clientY, left: shell.scrollLeft || 0, top: shell.scrollTop || 0 };
+  function applyPan() {
+    graph.style.transform = `translate(${panX}px, ${panY}px)`;
+  }
+  function beginPan(event, force = false) {
+    if (event.button !== undefined && event.button !== 0 && event.button !== 1) return;
+    const modified = force || event.shiftKey || event.button === 1;
+    if (!modified && hasInteractiveGraphTarget(event.target)) return;
+    panning = { x: event.clientX, y: event.clientY, left: panX, top: panY };
     shell.setAttribute("data-panning", "true");
     if (event.preventDefault) event.preventDefault();
   }
   function movePointer(event) {
     if (panning) {
-      shell.scrollLeft = Math.max(0, panning.left - (event.clientX - panning.x));
-      shell.scrollTop = Math.max(0, panning.top - (event.clientY - panning.y));
+      panX = panning.left + (event.clientX - panning.x);
+      panY = panning.top + (event.clientY - panning.y);
+      applyPan();
       if (event.preventDefault) event.preventDefault();
       return;
     }
     if (!dragging) return;
     const s = scenarios[dragging.scenario], point = graphPoint(event, s);
     dragging.ids.forEach(id => {
-      const offset = dragging.offsets[id];
-      s.layout.positions[id] = { x: Math.max(MIN_X, Math.min(MAX_COORD, point.x + offset.x)),
-        y: Math.max(MIN_Y, Math.min(MAX_COORD, point.y + offset.y)) };
+      const offset = dragging.offsets[id], minimum = minimumStepPosition(s, id);
+      s.layout.positions[id] = { x: Math.max(minimum.x, Math.min(MAX_COORD, point.x + offset.x)),
+        y: Math.max(minimum.y, Math.min(MAX_COORD, point.y + offset.y)) };
     });
     renderGraph(s);
     if (event.preventDefault) event.preventDefault();
@@ -349,13 +376,13 @@
   function setZoomAt(next, clientX, clientY) {
     const value = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, next));
     if (Math.abs(value - zoom) < 0.001) return;
-    const rect = graph.getBoundingClientRect(), oldLeft = shell.scrollLeft || 0, oldTop = shell.scrollTop || 0;
+    const rect = shell.getBoundingClientRect();
     const pointerX = clientX - rect.left, pointerY = clientY - rect.top;
-    const anchorX = pointerX / zoom, anchorY = pointerY / zoom;
+    const anchorX = (pointerX - panX) / zoom, anchorY = (pointerY - panY) / zoom;
     zoom = value;
+    panX = pointerX - anchorX * zoom;
+    panY = pointerY - anchorY * zoom;
     if (current) renderGraph(scenarios[current]);
-    shell.scrollLeft = Math.max(0, oldLeft + anchorX * zoom - pointerX);
-    shell.scrollTop = Math.max(0, oldTop + anchorY * zoom - pointerY);
   }
   function onWheel(event) {
     if (!event.deltaY) return;

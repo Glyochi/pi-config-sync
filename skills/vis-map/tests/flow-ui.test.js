@@ -22,7 +22,7 @@ const appScript = source.match(/<script>([\s\S]*?)<\/script>/)[1];
 
 class Element {
   constructor(tag) {
-    this.tag = tag; this.children = []; this.attributes = {}; this.listeners = {};
+    this.tag = tag; this.children = []; this.attributes = {}; this.listeners = {}; this.style = {};
     this._text = ""; this.className = ""; this.scrollLeft = 0; this.scrollTop = 0;
     this.clientWidth = 800; this.clientHeight = 600; this.disabled = false;
   }
@@ -57,7 +57,9 @@ function environment() {
   elements["flow-data"].textContent = JSON.stringify(model);
   elements["layout-info"].textContent = JSON.stringify(layoutInfo);
   elements["flow-graph"].getBoundingClientRect = function () {
-    return { left: -elements["graph-shell"].scrollLeft, top: -elements["graph-shell"].scrollTop,
+    const translate = this.style.transform?.match(/translate\(([-\d.]+)px,\s*([-\d.]+)px\)/);
+    return { left: -elements["graph-shell"].scrollLeft + Number(translate?.[1] || 0),
+      top: -elements["graph-shell"].scrollTop + Number(translate?.[2] || 0),
       width: Number(this.attributes.width) || 1200, height: Number(this.attributes.height) || 800 };
   };
   const listeners = {}, downloads = {};
@@ -109,6 +111,20 @@ function byAttr(element, name, value) {
   assert.doesNotMatch(source, /\bfetch\s*\(/);
 });
 
+test("frames keep quadrupled padding around nodes and nested frames", () => {
+  const env = environment(), scenario = model.scenarios.find(item => item.id === "process-request");
+  const maxDepth = Math.max(...scenario.groups.map(group => group.depth));
+  const frames = Object.fromEntries(env.app.frames.map(frame => [frame.id, frame]));
+  env.app.frames.forEach(frame => {
+    const rightmostNode = Math.max(...frame.step_ids.map(id => env.app.positions[id].x + 130));
+    const expected = 88 + (maxDepth - frame.depth) * 48;
+    assert.equal(frame.right - rightmostNode, expected);
+    assert.ok(frame.left >= 60, `${frame.id} has viewport margin on the left`);
+    assert.ok(frame.top >= 60, `${frame.id} has viewport margin at the top`);
+  });
+  assert.equal(frames["request-path"].right - frames["handler-work"].right, 48);
+});
+
 test("steps move freely and dragging a frame header translates its nested subtree", () => {
   const env = environment(), app = env.app, graph = env.elements["flow-graph"];
   const originalReceive = { ...app.positions.receive };
@@ -132,6 +148,29 @@ test("steps move freely and dragging a frame header translates its nested subtre
     assert.equal(app.positions[id].x, point.x + 65, `${id} x follows its frame`);
     assert.equal(app.positions[id].y, point.y + 38, `${id} y follows its frame`);
   });
+});
+
+test("viewport pans past the origin and modified drag pans over interactive nodes", () => {
+  const env = environment(), shell = env.elements["graph-shell"], graph = env.elements["flow-graph"];
+  shell.trigger("pointerdown", { clientX: 100, clientY: 100 });
+  env.window.dispatch("pointermove", { clientX: 300, clientY: 250 });
+  assert.equal(graph.style.transform, "translate(200px, 150px)");
+  env.window.dispatch("pointerup", {});
+
+  const original = { ...env.app.positions.receive };
+  const receive = byAttr(graph, "data-step-id", "receive");
+  receive.trigger("pointerdown", { clientX: 300, clientY: 250, shiftKey: true });
+  env.window.dispatch("pointermove", { clientX: 340, clientY: 280 });
+  assert.equal(env.app.positions.receive.x, original.x);
+  assert.equal(env.app.positions.receive.y, original.y);
+  assert.equal(graph.style.transform, "translate(240px, 180px)");
+  env.window.dispatch("pointerup", {});
+
+  const clientX = 410, clientY = 320, beforeRect = graph.getBoundingClientRect();
+  const worldX = (clientX - beforeRect.left) / env.app.zoom;
+  shell.trigger("wheel", { clientX, clientY, deltaY: -100 });
+  const afterRect = graph.getBoundingClientRect();
+  assert.ok(Math.abs((clientX - afterRect.left) / env.app.zoom - worldX) < 1e-8);
 });
 
 test("step inspector opens linked scenarios and breadcrumbs return to the caller", () => {

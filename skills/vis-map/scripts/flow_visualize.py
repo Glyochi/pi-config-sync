@@ -25,8 +25,12 @@ NODE_WIDTH = 260
 NODE_HEIGHT = 116
 COLUMN_GAP = 360
 ROW_GAP = 190
-FRAME_PADDING = 22
+FRAME_SPACING_SCALE = 4
+FRAME_PADDING = 22 * FRAME_SPACING_SCALE
+FRAME_NESTING_GAP = 12 * FRAME_SPACING_SCALE
 FRAME_HEADER_HEIGHT = 34
+LAYOUT_ITEM_GAP = 96
+CANVAS_MARGIN = 60
 LAYOUT_VERSION = 1
 MIN_LAYOUT_X = 180
 MIN_LAYOUT_Y = 160
@@ -314,7 +318,7 @@ def refit_frames(scenario, positions):
         points = [positions[step_id] for step_id in group["step_ids"] if step_id in positions]
         if not points:
             continue
-        padding = FRAME_PADDING + (max_depth - group["depth"]) * 12
+        padding = FRAME_PADDING + (max_depth - group["depth"]) * FRAME_NESTING_GAP
         frames.append({
             "id": group["id"], "name": group["name"], "parent": group["parent"],
             "depth": group["depth"], "step_ids": list(group["step_ids"]),
@@ -324,6 +328,88 @@ def refit_frames(scenario, positions):
             "bottom": max(point["y"] + NODE_HEIGHT / 2 for point in points) + padding,
         })
     return frames
+
+
+def _hierarchical_positions(scenario, depths):
+    """Give each group its own vertical lane while keeping the main path left-to-right."""
+    events = scenario["events"]
+    groups = {group["id"]: group for group in scenario["groups"]}
+    children = defaultdict(list)
+    direct_events = defaultdict(list)
+    event_order = {event["id"]: index for index, event in enumerate(events)}
+    for group in scenario["groups"]:
+        children[group["parent"]].append(group["id"])
+    for event in events:
+        direct_events[event["group"]].append(event)
+
+    max_depth = max(group["depth"] for group in scenario["groups"])
+    max_padding = FRAME_PADDING + max_depth * FRAME_NESTING_GAP
+    first_x = max(MIN_LAYOUT_X, CANVAS_MARGIN + NODE_WIDTH / 2 + max_padding)
+
+    def lane_positions(lane_events):
+        columns = defaultdict(list)
+        for event in lane_events:
+            columns[depths[event["id"]]].append(event)
+        positions = {}
+        height = NODE_HEIGHT
+        for column, column_events in columns.items():
+            for row, event in enumerate(column_events):
+                positions[event["id"]] = {
+                    "x": first_x + column * COLUMN_GAP,
+                    "y": NODE_HEIGHT / 2 + row * ROW_GAP,
+                }
+            height = max(height, NODE_HEIGHT + (len(column_events) - 1) * ROW_GAP)
+        return positions, height
+
+    def layout_group(group_id):
+        group = groups[group_id]
+        items = []
+        if direct_events[group_id]:
+            lane, height = lane_positions(direct_events[group_id])
+            items.append((min(event_order[event["id"]] for event in direct_events[group_id]), lane, height))
+        for child_id in children[group_id]:
+            child = groups[child_id]
+            block, height = layout_group(child_id)
+            items.append((min(event_order[step_id] for step_id in child["step_ids"]), block, height))
+        items.sort(key=lambda item: item[0])
+
+        positions = {}
+        cursor_y = 0
+        for _, block, height in items:
+            for step_id, point in block.items():
+                positions[step_id] = {"x": point["x"], "y": point["y"] + cursor_y}
+            cursor_y += height + LAYOUT_ITEM_GAP
+        if items:
+            cursor_y -= LAYOUT_ITEM_GAP
+
+        padding = FRAME_PADDING + (max_depth - group["depth"]) * FRAME_NESTING_GAP
+        left = min(point["x"] - NODE_WIDTH / 2 for point in positions.values()) - padding
+        top = min(point["y"] - NODE_HEIGHT / 2 for point in positions.values()) - padding - FRAME_HEADER_HEIGHT
+        bottom = max(point["y"] + NODE_HEIGHT / 2 for point in positions.values()) + padding
+        return ({
+            step_id: {"x": point["x"], "y": point["y"] - top}
+            for step_id, point in positions.items()
+        }, bottom - top)
+
+    root_items = []
+    if direct_events[None]:
+        lane, height = lane_positions(direct_events[None])
+        root_items.append((min(event_order[event["id"]] for event in direct_events[None]), lane, height))
+    for group_id in children[None]:
+        group = groups[group_id]
+        block, height = layout_group(group_id)
+        root_items.append((min(event_order[step_id] for step_id in group["step_ids"]), block, height))
+    root_items.sort(key=lambda item: item[0])
+
+    positions = {}
+    cursor_y = 0
+    for _, block, height in root_items:
+        for step_id, point in block.items():
+            positions[step_id] = {"x": point["x"], "y": point["y"] + cursor_y + CANVAS_MARGIN}
+        cursor_y += height + LAYOUT_ITEM_GAP
+    if root_items:
+        cursor_y -= LAYOUT_ITEM_GAP
+    return positions
 
 
 def layout_scenario(scenario, saved_positions=None):
@@ -344,19 +430,31 @@ def layout_scenario(scenario, saved_positions=None):
             if indegree[target] == 0:
                 ready.append(target)
 
-    columns = defaultdict(list)
-    for event in events:
-        columns[depths[event["id"]]].append(event["id"])
-    positions = {}
-    for column, step_ids in columns.items():
-        for row, step_id in enumerate(step_ids):
-            positions[step_id] = {"x": MIN_LAYOUT_X + column * COLUMN_GAP,
-                                  "y": MIN_LAYOUT_Y + row * ROW_GAP}
+    if scenario["groups"]:
+        positions = _hierarchical_positions(scenario, depths)
+    else:
+        columns = defaultdict(list)
+        for event in events:
+            columns[depths[event["id"]]].append(event["id"])
+        positions = {}
+        for column, step_ids in columns.items():
+            for row, step_id in enumerate(step_ids):
+                positions[step_id] = {"x": MIN_LAYOUT_X + column * COLUMN_GAP,
+                                      "y": MIN_LAYOUT_Y + row * ROW_GAP}
     for step_id, point in (saved_positions or {}).items():
         if step_id in positions:
             positions[step_id] = dict(point)
 
     frames = refit_frames(scenario, positions)
+    if frames:
+        offset_x = max(0, CANVAS_MARGIN - min(frame["left"] for frame in frames))
+        offset_y = max(0, CANVAS_MARGIN - min(frame["top"] for frame in frames))
+        if offset_x or offset_y:
+            positions = {
+                step_id: {"x": point["x"] + offset_x, "y": point["y"] + offset_y}
+                for step_id, point in positions.items()
+            }
+            frames = refit_frames(scenario, positions)
     width = max(700, max((point["x"] + NODE_WIDTH / 2 + 60 for point in positions.values()), default=0),
                 max((frame["right"] + 40 for frame in frames), default=0))
     height = max(500, max((point["y"] + NODE_HEIGHT / 2 + 60 for point in positions.values()), default=0),
@@ -454,9 +552,9 @@ def render_flow_html(flow, source_name="FLOWS.md", layout_filename="flow-graph.l
 <title>Scenario flows</title><style>{css}</style></head>
 <body><header><h1>Scenario flows</h1><span class="north-star">{source} · selective scenario guidance</span>
 <div class="navigation"><button id="back-button" type="button" disabled>← Back</button><nav id="breadcrumbs" aria-label="Scenario breadcrumbs"></nav></div>
-<div class="layout-tools"><span class="zoom-hint">Scroll over the graph to zoom</span><button id="save-flow-layout" type="button">Save flow layout</button><span id="layout-status" aria-live="polite"></span></div></header>
+<div class="layout-tools"><span class="zoom-hint">Drag blank canvas to pan · Shift/middle-drag anywhere · Scroll to zoom</span><button id="save-flow-layout" type="button">Save flow layout</button><span id="layout-status" aria-live="polite"></span></div></header>
 <div class="layout"><aside id="scenario-sidebar"><h2>Scenarios</h2><div id="scenario-index"></div></aside>
-<main><section id="scenario-summary"></section><div id="graph-shell" class="graph-shell" title="Scroll over the graph to zoom"><svg id="flow-graph" role="img" aria-label="Scenario steps and connections"></svg></div></main>
+<main><section id="scenario-summary"></section><div id="graph-shell" class="graph-shell" title="Drag blank canvas to pan; Shift/middle-drag anywhere; scroll to zoom"><svg id="flow-graph" role="img" aria-label="Scenario steps and connections"></svg></div></main>
 <aside id="details" aria-live="polite"><p class="note">Select a step, connection, or frame for details.</p></aside></div>
 <script type="application/json" id="flow-data">{data}</script>
 <script type="application/json" id="layout-info">{layout_info}</script><script>{script}</script></body></html>""".format(

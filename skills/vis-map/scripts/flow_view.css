@@ -22,8 +22,8 @@ main { min-width:0; padding:14px }
 #scenario-summary { padding:0 4px 12px }
 #scenario-summary h2 { margin:0; font-size:19px }
 #scenario-summary p { margin:4px 0; color:#475569 }
-.graph-shell { width:100%; height:calc(100vh - 150px); min-height:440px; overflow:auto; overscroll-behavior:contain; background:white; border:1px solid #cbd5e1; cursor:grab }
-#flow-graph { display:block }
+.graph-shell { width:100%; height:calc(100vh - 150px); min-height:440px; overflow:hidden; overscroll-behavior:contain; touch-action:none; user-select:none; background:white; border:1px solid #cbd5e1; cursor:grab }
+#flow-graph { display:block; transform-origin:0 0 }
 .graph-shell[data-panning="true"],.graph-shell[data-panning="true"] #flow-graph,.graph-shell[data-panning="true"] #flow-graph * { cursor:grabbing!important }
 .zoom-hint { color:#64748b; font-size:10px; white-space:nowrap }
 .layout-tools { display:flex; align-items:center; gap:8px; margin-left:auto }
