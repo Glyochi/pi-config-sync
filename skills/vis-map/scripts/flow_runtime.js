@@ -10,10 +10,12 @@
   const graph = get("flow-graph"), summary = get("scenario-summary"), details = get("details");
   const index = get("scenario-index"), crumbs = get("breadcrumbs"), back = get("back-button");
   const participantList = get("participant-list"), layoutStatus = get("layout-status");
+  const graphShell = get("graph-shell");
   document.body.className = "runtime-view";
-  graph.setAttribute("aria-label", "Process and thread frames with top-to-bottom execution paths");
+  graph.setAttribute("aria-label", "Scroll over the graph to zoom; process and thread frames with top-to-bottom execution paths");
   let current = null, history = [], selectedEvent = null, selectedLink = null, selectedFrame = null;
-  let mode = "highlight", selection = new Set(), dragging = null;
+  let mode = "highlight", selection = new Set(), dragging = null, panning = null, zoom = 1;
+  const MIN_ZOOM = 0.4, MAX_ZOOM = 3, WHEEL_ZOOM_SENSITIVITY = 0.005;
 
   function el(tag, cls, text) {
     const node = document.createElement(tag);
@@ -147,6 +149,26 @@
     });
     summary.appendChild(legend);
   }
+  function setZoomAt(value, screenX, screenY) {
+    const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, value));
+    if (Math.abs(next - zoom) < 0.001) return;
+    const rect = graph.getBoundingClientRect();
+    const oldLeft = graphShell.scrollLeft || 0, oldTop = graphShell.scrollTop || 0;
+    const pointerX = screenX - rect.left, pointerY = screenY - rect.top;
+    const anchorX = pointerX / zoom, anchorY = pointerY / zoom;
+    zoom = next;
+    if (current) renderGraph(scenarios[current]);
+    graphShell.scrollLeft = Math.max(0, oldLeft + anchorX * zoom - pointerX);
+    graphShell.scrollTop = Math.max(0, oldTop + anchorY * zoom - pointerY);
+  }
+  function handleGraphWheel(event) {
+    if (!event.deltaY) return;
+    event.preventDefault();
+    let delta = event.deltaY;
+    if (event.deltaMode === 1) delta *= 16;
+    else if (event.deltaMode === 2) delta *= graphShell.clientHeight || 800;
+    setZoomAt(zoom * Math.exp(-delta * WHEEL_ZOOM_SENSITIVITY), event.clientX, event.clientY);
+  }
   function fit(s) {
     s.layout.frames.threads.forEach(frame => {
       const points = s.events.filter(e => e.thread === frame.id).map(e => s.layout.positions[e.id]);
@@ -274,7 +296,7 @@
     fit(s);
     graph.replaceChildren();
     graph.setAttribute("viewBox", `0 0 ${s.layout.width} ${s.layout.height}`);
-    graph.setAttribute("width", s.layout.width); graph.setAttribute("height", s.layout.height);
+    graph.setAttribute("width", Math.round(s.layout.width * zoom)); graph.setAttribute("height", Math.round(s.layout.height * zoom));
     const defs = svg("defs"), marker = svg("marker", { id: "flow-arrow", markerWidth: 8, markerHeight: 8, refX: 7, refY: 4, orient: "auto" });
     marker.appendChild(svg("path", { d: "M0,0 L8,4 L0,8 z", fill: "context-stroke" }));
     defs.appendChild(marker); graph.appendChild(defs);
@@ -365,17 +387,46 @@
     const rect = graph.getBoundingClientRect();
     return { x: (event.clientX - rect.left) * s.layout.width / (rect.width || s.layout.width), y: (event.clientY - rect.top) * s.layout.height / (rect.height || s.layout.height) };
   }
+  function hasInteractiveGraphTarget(target) {
+    while (target && target !== graphShell) {
+      if (target.getAttribute) {
+        const classes = target.getAttribute("class") || "";
+        const tokens = classes.split(" ");
+        if (["event-node", "flow-link", "subflow-button", "frame-header"].some(name => tokens.includes(name))) return true;
+      }
+      target = target.parentNode;
+    }
+    return false;
+  }
+  function beginBackgroundPan(event) {
+    if (event.button !== undefined && event.button !== 0) return;
+    if (hasInteractiveGraphTarget(event.target)) return;
+    panning = { x: event.clientX, y: event.clientY, left: graphShell.scrollLeft || 0, top: graphShell.scrollTop || 0 };
+    graphShell.setAttribute("data-panning", "true");
+    if (event.preventDefault) event.preventDefault();
+  }
   function beginDrag(event, id) {
     if (event.button !== undefined && event.button !== 0) return;
     const s = scenarios[current], point = graphPoint(event, s), p = s.layout.positions[id];
     dragging = { scenario: current, id, dx: p.x - point.x, dy: p.y - point.y };
   }
   function moveDrag(event) {
+    if (panning) {
+      graphShell.scrollLeft = Math.max(0, panning.left - (event.clientX - panning.x));
+      graphShell.scrollTop = Math.max(0, panning.top - (event.clientY - panning.y));
+      if (event.preventDefault) event.preventDefault();
+      return;
+    }
     if (!dragging) return;
     const s = scenarios[dragging.scenario], node = eventMap(s)[dragging.id], point = graphPoint(event, s);
     const lane = s.layout.lanes[node.thread || "external:" + node.participant];
     s.layout.positions[node.id] = { x: Math.max(lane.left + 160, Math.min(lane.right - 160, point.x + dragging.dx)), y: Math.max(s.layout.first_row, Math.min(1000000, point.y + dragging.dy)) };
     renderGraph(s);
+  }
+  function endPointerAction() {
+    dragging = null;
+    panning = null;
+    graphShell.removeAttribute("data-panning");
   }
   function saveLayout() {
     const data = { version: layoutInfo.version, scenarios: {} };
@@ -389,15 +440,17 @@
   get("filter-mode").addEventListener("click", () => setParticipantMode("filter"));
   get("clear-participants").addEventListener("click", clearParticipantSelection);
   get("save-flow-layout").addEventListener("click", saveLayout);
+  graphShell.addEventListener("pointerdown", beginBackgroundPan);
+  graphShell.addEventListener("wheel", handleGraphWheel, { passive: false });
   back.addEventListener("click", goBack);
   window.addEventListener("pointermove", moveDrag);
-  window.addEventListener("pointerup", () => { dragging = null; });
-  window.addEventListener("pointercancel", () => { dragging = null; });
+  window.addEventListener("pointerup", endPointerAction);
+  window.addEventListener("pointercancel", endPointerAction);
   const root = model.scenarios.find(s => s.entrypoint);
   render(root ? root.id : model.scenarios[0].id);
   window.flowGraphApp = {
     navigateTo, openSubflow, goBack, selectEvent, selectLink, selectFrame, setParticipantMode, clearParticipantSelection,
     get currentScenario() { return current; }, get breadcrumbs() { return history.concat(current ? [current] : []); },
-    get positions() { return scenarios[current].layout.positions; }, get frames() { return scenarios[current].layout.frames; }
+    get positions() { return scenarios[current].layout.positions; }, get frames() { return scenarios[current].layout.frames; }, get zoom() { return zoom; }
   };
 })();

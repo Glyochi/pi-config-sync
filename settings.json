@@ -25,5 +25,8 @@
     "opencode/deepseek-v4.1-flash": "max",
     "openai/gpt-6-luna": "max"
   },
-  "deviceId": "66f9f993-0e7b-459f-91ca-2b3ef8f083da"
+  "deviceId": "66f9f993-0e7b-459f-91ca-2b3ef8f083da",
+  "compaction": {
+    "enabled": false
+  }
 }

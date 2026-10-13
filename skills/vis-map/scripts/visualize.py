@@ -1542,12 +1542,66 @@ DATATYPE_REFERENCE_JS = """
 
 LAYOUT_SAVE_UI = (
     '<div style="position:fixed;top:10px;right:10px;z-index:1100;'
-    'max-width:320px;padding:8px;background:rgba(255,255,255,0.95);'
+    'max-width:360px;padding:8px;background:rgba(255,255,255,0.95);'
     'border:1px solid #ccc;font:12px/1.4 sans-serif;">'
+    '<div style="display:flex;align-items:center;gap:7px;">'
+    '<span role="group" aria-label="Map zoom" style="display:inline-flex;align-items:center;gap:3px;">'
+    '<button id="map-zoom-out" type="button" aria-label="Zoom out" title="Zoom out">−</button>'
+    '<button id="map-zoom-reset" type="button" aria-label="Reset zoom" title="Reset zoom" disabled>100%</button>'
+    '<button id="map-zoom-in" type="button" aria-label="Zoom in" title="Zoom in">+</button>'
+    '</span>'
     '<button id="save-layout-button" type="button">Save layout</button>'
+    '</div>'
     '<div id="layout-save-status" aria-live="polite"></div>'
     '</div>'
 )
+
+MAP_ZOOM_JS = """
+<script type="text/javascript">
+(function () {
+  var zoomIn = document.getElementById("map-zoom-in");
+  var zoomOut = document.getElementById("map-zoom-out");
+  var zoomReset = document.getElementById("map-zoom-reset");
+  if (!zoomIn || !zoomOut || !zoomReset) return;
+
+  var MIN_SCALE = 0.4;
+  var MAX_SCALE = 3;
+  var STEP = 1.2;
+
+  function updateControls() {
+    var scale = network.getScale();
+    if (!Number.isFinite(scale) || scale <= 0) scale = 1;
+    zoomReset.textContent = Math.round(scale * 100) + "%";
+    zoomOut.disabled = scale <= MIN_SCALE;
+    zoomIn.disabled = scale >= MAX_SCALE;
+    zoomReset.disabled = Math.abs(scale - 1) < 0.001;
+  }
+
+  function setScale(value) {
+    var scale = network.getScale();
+    if (!Number.isFinite(scale) || scale <= 0) scale = 1;
+    var next = Math.max(MIN_SCALE, Math.min(MAX_SCALE, value));
+    if (Math.abs(next - scale) < 0.001) return;
+    network.moveTo({
+      position: network.getViewPosition(),
+      scale: next,
+      animation: { duration: 160, easingFunction: "easeInOutQuad" }
+    });
+    updateControls();
+  }
+
+  zoomIn.addEventListener("click", function () {
+    setScale(network.getScale() * STEP);
+  });
+  zoomOut.addEventListener("click", function () {
+    setScale(network.getScale() / STEP);
+  });
+  zoomReset.addEventListener("click", function () { setScale(1); });
+  network.on("zoom", updateControls);
+  updateControls();
+})();
+</script>
+"""
 
 LAYOUT_SAVE_JS = """
 <script type="text/javascript">
@@ -2165,6 +2219,7 @@ def render_map(input_path, output_path):
         INTERACTION_JS,
         node_tooltip,
         datatype_reference,
+        MAP_ZOOM_JS,
         layout_save_js,
         "</body>",
     ]

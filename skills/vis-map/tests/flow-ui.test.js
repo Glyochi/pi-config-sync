@@ -39,7 +39,7 @@ class Element {
   constructor(tag) {
     this.tag = tag; this.children = []; this.attributes = {}; this.listeners = {};
     this._text = ""; this.disabled = false; this.checked = false; this.value = "";
-    this.className = ""; this.download = ""; this.href = "";
+    this.className = ""; this.download = ""; this.href = ""; this.clientWidth = 800; this.clientHeight = 600; this.scrollLeft = 0; this.scrollTop = 0;
   }
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text + this.children.map((child) => child.textContent).join(""); }
@@ -47,6 +47,7 @@ class Element {
   replaceChildren(...children) { this.children = children; this._text = ""; }
   setAttribute(key, value) { this.attributes[key] = String(value); }
   getAttribute(key) { return this.attributes[key] ?? null; }
+  removeAttribute(key) { delete this.attributes[key]; }
   addEventListener(name, handler) { (this.listeners[name] ||= []).push(handler); }
   getBoundingClientRect() {
     return { left: 0, top: 0, width: Number(this.attributes.width) || 1200, height: Number(this.attributes.height) || 800 };
@@ -59,8 +60,9 @@ class Element {
   remove() {}
 }
 function environment(flowModel = model, flowScript = appScript, flowLayoutInfo = layoutInfo) {
-  const ids = ["flow-data", "layout-info", "scenario-index", "participant-controls", "participant-list", "flow-graph", "scenario-summary", "details", "back-button", "breadcrumbs", "highlight-mode", "filter-mode", "clear-participants", "save-flow-layout", "layout-status"];
+  const ids = ["flow-data", "layout-info", "scenario-index", "participant-controls", "participant-list", "flow-graph", "graph-shell", "scenario-summary", "details", "back-button", "breadcrumbs", "highlight-mode", "filter-mode", "clear-participants", "save-flow-layout", "layout-status"];
   const elements = Object.fromEntries(ids.map((id) => [id, new Element("div")]));
+  elements["flow-graph"].getBoundingClientRect = function () { return { left: -elements["graph-shell"].scrollLeft, top: -elements["graph-shell"].scrollTop, width: Number(this.attributes.width) || 1200, height: Number(this.attributes.height) || 800 }; };
   elements["flow-data"].textContent = JSON.stringify(flowModel);
   elements["layout-info"].textContent = JSON.stringify(flowLayoutInfo);
   const listeners = {};
@@ -104,8 +106,52 @@ function byAttr(element, attr, value) {
 
 test("embedded flow UI parses and has no external resource dependencies", () => {
   new vm.Script(appScript, { filename: "flow-ui.js" });
+  assert.match(source, /title="Scroll over the graph to zoom"/);
+  assert.match(appScript, /addEventListener\("wheel"/);
+  assert.doesNotMatch(source, /id="zoom-(?:in|out|reset)"/);
   assert.doesNotMatch(source, /<(?:script|link)[^>]+(?:src|href)=["']https?:\/\//);
   assert.doesNotMatch(source, /\bfetch\s*\(/);
+});
+
+test("mouse-wheel zoom follows the pointer without changing saved event positions", () => {
+  const { app, elements } = environment();
+  const graph = elements["flow-graph"], shell = elements["graph-shell"];
+  const initialWidth = Number(graph.getAttribute("width")), initialHeight = Number(graph.getAttribute("height"));
+  const initialPosition = { ...app.positions["parse-options"] };
+  let prevented = false;
+  shell.trigger("wheel", { deltaY: -120, deltaMode: 0, clientX: 350, clientY: 260, preventDefault() { prevented = true; } });
+  assert.ok(app.zoom > 1, "wheel up zooms in");
+  assert.ok(Math.abs(app.zoom - Math.exp(0.6)) < 1e-9, "one 120px wheel notch uses sensitivity 0.005");
+  assert.equal(Number(graph.getAttribute("width")), Math.round(initialWidth * app.zoom));
+  assert.equal(Number(graph.getAttribute("height")), Math.round(initialHeight * app.zoom));
+  assert.ok(shell.scrollLeft > 0, "zoom anchors the graph beneath the pointer");
+  assert.ok(prevented, "the wheel is consumed over the graph instead of scrolling the page");
+  assert.deepEqual(JSON.parse(JSON.stringify(app.positions["parse-options"])), initialPosition);
+  shell.trigger("wheel", { deltaY: 120, deltaMode: 0, clientX: 350, clientY: 260, preventDefault() {} });
+  assert.equal(Math.round(app.zoom * 100), 100, "wheel down returns to the original scale");
+  assert.equal(Number(graph.getAttribute("width")), initialWidth);
+  assert.equal(Number(graph.getAttribute("height")), initialHeight);
+  assert.equal(shell.scrollLeft, 0, "zooming back out restores the original scroll position");
+});
+
+test("dragging the graph background pans while event nodes retain their drag behavior", () => {
+  const { app, elements, window } = environment();
+  const shell = elements["graph-shell"], initial = { ...app.positions["parse-options"] };
+  shell.scrollLeft = 180; shell.scrollTop = 120;
+  shell.trigger("pointerdown", { button: 0, clientX: 400, clientY: 300, target: shell, preventDefault() {} });
+  window.dispatch("pointermove", { clientX: 450, clientY: 270, preventDefault() {} });
+  assert.equal(shell.scrollLeft, 130);
+  assert.equal(shell.scrollTop, 150);
+  assert.deepEqual(JSON.parse(JSON.stringify(app.positions["parse-options"])), initial);
+  assert.equal(shell.getAttribute("data-panning"), "true");
+  window.dispatch("pointerup", {});
+  assert.equal(shell.getAttribute("data-panning"), null);
+
+  const eventNode = byAttr(elements["flow-graph"], "data-event-id", "parse-options"), left = shell.scrollLeft;
+  shell.trigger("pointerdown", { button: 0, clientX: 400, clientY: 300, target: eventNode, preventDefault() {} });
+  window.dispatch("pointermove", { clientX: 500, clientY: 350, preventDefault() {} });
+  assert.equal(shell.scrollLeft, left, "an event drag is not treated as background panning");
+  window.dispatch("pointerup", {});
 });
 
 test("nested subflow navigation supports back and breadcrumb return", () => {
@@ -225,6 +271,9 @@ test("event/link details expose contracts, bindings, guards, and sync/async mode
 test("version-2 view groups process/thread frames and keeps output offline", () => {
   new vm.Script(runtimeScript, { filename: "flow-runtime-ui.js" });
   assert.equal(runtimeModel.version, 2);
+  assert.match(runtimeSource, /title="Scroll over the graph to zoom"/);
+  assert.match(runtimeScript, /addEventListener\("wheel"/);
+  assert.doesNotMatch(runtimeSource, /id="zoom-(?:in|out|reset)"/);
   assert.match(runtimeSource, /class="runtime-view"/);
   assert.match(runtimeSource, /setAttribute\("id", "thread-list"\)/);
   assert.doesNotMatch(runtimeSource, /<(?:script|link)[^>]+(?:src|href)=["']https?:\/\//);

@@ -76,10 +76,21 @@ function makeEnvironment() {
   const canvasListeners = Object.create(null);
   const documentListeners = Object.create(null);
   const buttonListeners = Object.create(null);
+  const zoomButtonListeners = Object.create(null);
+  const zoomButtons = Object.create(null);
+  ["map-zoom-in", "map-zoom-out", "map-zoom-reset"].forEach((id) => {
+    zoomButtons[id] = {
+      textContent: "",
+      disabled: false,
+      addEventListener(name, listener) { zoomButtonListeners[id + ":" + name] = listener; },
+    };
+  });
   let hitNode = null;
   let selectedNodes = [];
   let strokeColors = [];
   let savedLayoutText = null;
+  let scale = 1;
+  let viewPosition = { x: 0, y: 0 };
 
   const context = {
     strokeStyle: "#000000",
@@ -118,7 +129,7 @@ function makeEnvironment() {
       if (id === "mynetwork") return container;
       if (id === "save-layout-button") return saveButton;
       if (id === "layout-save-status") return layoutStatus;
-      return null;
+      return zoomButtons[id] || null;
     },
     createElement() {
       return { style: {}, click() {}, remove() {} };
@@ -154,7 +165,13 @@ function makeEnvironment() {
     once(name, listener) {
       (onceListeners[name] ||= []).push(listener);
     },
-    getScale() { return 1; },
+    getScale() { return scale; },
+    getViewPosition() { return { ...viewPosition }; },
+    moveTo(options) {
+      scale = options.scale;
+      viewPosition = { ...options.position };
+      (networkListeners.zoom || []).forEach((listener) => listener({ scale }));
+    },
     getPositions() {
       return Object.fromEntries(
         Object.entries(positions).map(([id, point]) => [id, { ...point }])
@@ -212,6 +229,9 @@ function makeEnvironment() {
   vm.runInNewContext(sourceConstant("INTERACTION_JS"), sandbox, {
     filename: "interaction.js",
   });
+  vm.runInNewContext(sourceConstant("MAP_ZOOM_JS"), sandbox, {
+    filename: "map-zoom.js",
+  });
 
   return {
     nodes,
@@ -221,6 +241,8 @@ function makeEnvironment() {
     canvasListeners,
     documentListeners,
     buttonListeners,
+    zoomButtons,
+    clickZoom(id) { zoomButtonListeners[id + ":click"](); },
     fire(name, params) {
       (networkListeners[name] || []).forEach((listener) => listener(params));
     },
@@ -232,6 +254,8 @@ function makeEnvironment() {
     stabilize() { this.fireOnce("stabilizationIterationsDone"); },
     hit(id) { hitNode = id; },
     get strokeColors() { return strokeColors; },
+    get zoomScale() { return scale; },
+    get viewPosition() { return { ...viewPosition }; },
     get savedLayoutText() { return savedLayoutText; },
     clickSave() {
       const script = layoutSaveScript();
@@ -272,6 +296,32 @@ function drag(env, nodeIds, dx, dy) {
   });
   env.canvasListeners.mouseup({ clientX: 0, clientY: 0, shiftKey: false });
 }
+
+test("zoom controls change scale around the current view and leave node positions alone", () => {
+  const env = makeEnvironment();
+  env.stabilize();
+  const before = clonePositions(env.positions);
+  env.network.moveTo({ position: { x: 125, y: -70 }, scale: 1.5 });
+  const center = env.viewPosition;
+
+  env.clickZoom("map-zoom-in");
+  closeTo(env.zoomScale, 1.8, "zoom in increases scale");
+  assert.deepEqual(env.viewPosition, center, "zoom preserves the current view center");
+  assert.equal(env.zoomButtons["map-zoom-reset"].textContent, "180%");
+  env.clickZoom("map-zoom-out");
+  closeTo(env.zoomScale, 1.5, "zoom out decreases scale");
+  env.clickZoom("map-zoom-reset");
+  assert.equal(env.zoomScale, 1);
+  assert.equal(env.zoomButtons["map-zoom-reset"].disabled, true);
+  assert.deepEqual(clonePositions(env.positions), before, "zoom does not move nodes");
+
+  for (let i = 0; i < 20; i++) env.clickZoom("map-zoom-in");
+  assert.equal(env.zoomScale, 3, "zoom-in is bounded at 300%");
+  assert.equal(env.zoomButtons["map-zoom-in"].disabled, true);
+  for (let i = 0; i < 30; i++) env.clickZoom("map-zoom-out");
+  assert.equal(env.zoomScale, 0.4, "zoom-out is bounded at 40%");
+  assert.equal(env.zoomButtons["map-zoom-out"].disabled, true);
+});
 
 test("dragging one owner translates its nested subtree and Ctrl+Z restores it", () => {
   const env = makeEnvironment();
@@ -346,6 +396,9 @@ test("layout save persists movable nodes but omits derived owner anchors", () =>
 test("regenerated HTML embeds syntactically valid interaction scripts", () => {
   const htmlPath = process.env.VIS_MAP_HTML_PATH || "/workspace/map/map-graph.html";
   const html = fs.readFileSync(htmlPath, "utf8");
+  for (const id of ["map-zoom-in", "map-zoom-out", "map-zoom-reset"]) {
+    assert.ok(html.includes(`id="${id}"`), `generated map is missing ${id}`);
+  }
   const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)]
     .map((match) => match[1]);
   for (const marker of [
@@ -353,6 +406,7 @@ test("regenerated HTML embeds syntactically valid interaction scripts", () => {
     "var DATATYPE_NODE_COLORS =",
     "function undo() {",
     "var FILENAME =",
+    "var MIN_SCALE =",
   ]) {
     const script = scripts.find((candidate) => candidate.includes(marker));
     assert.ok(script, `generated HTML is missing script containing ${marker}`);

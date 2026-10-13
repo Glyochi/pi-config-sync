@@ -19,13 +19,14 @@ const layoutInfo = JSON.parse(source.match(/id="layout-info">([\s\S]*?)<\/script
 const appScript = source.match(/<script>([\s\S]*?)<\/script>/)[1];
 
 class Element {
-  constructor(tag) { this.tag = tag; this.children = []; this.attributes = {}; this.listeners = {}; this._text = ""; this.className = ""; }
+  constructor(tag) { this.tag = tag; this.children = []; this.attributes = {}; this.listeners = {}; this._text = ""; this.className = ""; this.clientWidth = 800; this.clientHeight = 600; this.scrollLeft = 0; this.scrollTop = 0; }
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text + this.children.map(c => c.textContent).join(""); }
   appendChild(child) { this.children.push(child); return child; }
   replaceChildren(...children) { this.children = children; this._text = ""; }
   setAttribute(name, value) { this.attributes[name] = String(value); }
   getAttribute(name) { return this.attributes[name] ?? null; }
+  removeAttribute(name) { delete this.attributes[name]; }
   addEventListener(name, handler) { (this.listeners[name] ||= []).push(handler); }
   trigger(name, event = {}) { const value = { button: 0, key: "", preventDefault() {}, stopPropagation() {}, ...event }; (this.listeners[name] || []).forEach(h => h(value)); }
   getBoundingClientRect() { return { left: 0, top: 0, width: Number(this.attributes.width) || 1200, height: Number(this.attributes.height) || 800 }; }
@@ -33,8 +34,9 @@ class Element {
   remove() {}
 }
 function environment() {
-  const names = ["flow-data", "layout-info", "flow-graph", "scenario-summary", "details", "scenario-index", "breadcrumbs", "back-button", "participant-list", "participant-controls", "highlight-mode", "filter-mode", "clear-participants", "save-flow-layout", "layout-status"];
+  const names = ["flow-data", "layout-info", "flow-graph", "graph-shell", "scenario-summary", "details", "scenario-index", "breadcrumbs", "back-button", "participant-list", "participant-controls", "highlight-mode", "filter-mode", "clear-participants", "save-flow-layout", "layout-status"];
   const elements = Object.fromEntries(names.map(id => [id, new Element("div")]));
+  elements["flow-graph"].getBoundingClientRect = function () { return { left: -elements["graph-shell"].scrollLeft, top: -elements["graph-shell"].scrollTop, width: Number(this.attributes.width) || 1200, height: Number(this.attributes.height) || 800 }; };
   elements["flow-data"].textContent = JSON.stringify(model); elements["layout-info"].textContent = JSON.stringify(layoutInfo);
   const listeners = {}, downloads = {};
   const document = {
@@ -67,8 +69,51 @@ const graphOf = env => env.elements["flow-graph"];
   assert.match(parent.textContent, /3 fixed threads \+ 0\.\.n HTTP request threads/);
   const second = attr(graph, "data-thread-frame", "second-main");
   assert.match(second.textContent, /Context only/);
+  assert.doesNotMatch(source, /id="zoom-(?:in|out|reset)"/);
+  assert.match(source, /title="Scroll over the graph to zoom"/);
+  assert.match(appScript, /addEventListener\("wheel"/);
   assert.doesNotMatch(source, /<(?:script|link)[^>]+(?:src|href)=["']https?:\/\//);
   assert.doesNotMatch(source, /\bfetch\s*\(/);
+});
+
+test("mouse-wheel zoom follows the pointer without moving events or frames", () => {
+  const env = environment(), graph = graphOf(env), shell = env.elements["graph-shell"];
+  const initialWidth = Number(graph.getAttribute("width")), initialHeight = Number(graph.getAttribute("height"));
+  const position = { ...env.app.positions.snapshot }, threadLeft = env.app.frames.threads.find(t => t.id === "reconciler").left;
+  let prevented = false;
+  shell.trigger("wheel", { deltaY: -120, deltaMode: 0, clientX: 350, clientY: 260, preventDefault() { prevented = true; } });
+  assert.ok(env.app.zoom > 1);
+  assert.ok(Math.abs(env.app.zoom - Math.exp(0.6)) < 1e-9, "one 120px wheel notch uses sensitivity 0.005");
+  assert.equal(Number(graph.getAttribute("width")), Math.round(initialWidth * env.app.zoom));
+  assert.equal(Number(graph.getAttribute("height")), Math.round(initialHeight * env.app.zoom));
+  assert.ok(shell.scrollLeft > 0, "zoom anchors the graph beneath the pointer");
+  assert.ok(prevented, "the wheel is consumed over the graph instead of scrolling the page");
+  assert.deepEqual(JSON.parse(JSON.stringify(env.app.positions.snapshot)), position);
+  assert.equal(env.app.frames.threads.find(t => t.id === "reconciler").left, threadLeft);
+  shell.trigger("wheel", { deltaY: 120, deltaMode: 0, clientX: 350, clientY: 260, preventDefault() {} });
+  assert.equal(Math.round(env.app.zoom * 100), 100);
+  assert.equal(Number(graph.getAttribute("width")), initialWidth);
+  assert.equal(Number(graph.getAttribute("height")), initialHeight);
+  assert.equal(shell.scrollLeft, 0, "zooming back out restores the original scroll position");
+});
+
+test("dragging the background pans the canvas without moving frame events", () => {
+  const env = environment(), shell = env.elements["graph-shell"], initial = { ...env.app.positions.snapshot };
+  shell.scrollLeft = 180; shell.scrollTop = 120;
+  shell.trigger("pointerdown", { button: 0, clientX: 400, clientY: 300, target: shell, preventDefault() {} });
+  env.window.dispatch("pointermove", { clientX: 450, clientY: 270, preventDefault() {} });
+  assert.equal(shell.scrollLeft, 130);
+  assert.equal(shell.scrollTop, 150);
+  assert.deepEqual(JSON.parse(JSON.stringify(env.app.positions.snapshot)), initial);
+  assert.equal(shell.getAttribute("data-panning"), "true");
+  env.window.dispatch("pointerup", {});
+  assert.equal(shell.getAttribute("data-panning"), null);
+
+  const eventNode = attr(graphOf(env), "data-event-id", "snapshot"), left = shell.scrollLeft;
+  shell.trigger("pointerdown", { button: 0, clientX: 400, clientY: 300, target: eventNode, preventDefault() {} });
+  env.window.dispatch("pointermove", { clientX: 500, clientY: 350, preventDefault() {} });
+  assert.equal(shell.scrollLeft, left, "an event drag is not treated as background panning");
+  env.window.dispatch("pointerup", {});
 });
 
 test("decision, termination, repeats and interaction categories are visible and inspectable", () => {
