@@ -27,5 +27,6 @@
   "deviceId": "66f9f993-0e7b-459f-91ca-2b3ef8f083da",
   "compaction": {
     "enabled": false
-  }
+  },
+  "followUpMode": "one-at-a-time"
 }
