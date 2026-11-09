@@ -47,6 +47,9 @@
 !PI-QUESTION-TOOLS.md
 !PI-QUESTION-TOOLS.md/
 !PI-QUESTION-TOOLS.md/**
+!agents
+!agents/
+!agents/**
 # hard denylist — re-ignored even inside allowed dirs
 **/logs/
 auth*

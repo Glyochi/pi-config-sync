@@ -1,0 +1,79 @@
+---
+name: learn-visualize
+description: "Create a verified Mermaid/SVG visual during an explicitly requested lesson, using the existing pi-subagents makers and embedding the resulting PNG in Obsidian. Used from the learn-teach skill or explicitly with /skill:learn-visualize."
+disable-model-invocation: true
+---
+
+# Visualize
+
+A picture earns its place only when it shows something words can't — shape, structure, direction, relationship, geometry. This skill produces ONE such picture, guarantees it is **correct** (the maker renders it and looks at it before returning), and drops it into the lesson so it renders inline in the Obsidian note linked with `/learn-log`.
+
+You are the **creative director**. You decide the exact idea and distill it to its fewest carrying elements. A **maker subagent** does the authoring, rendering, visual verification, and saving, then returns a filename. You embed that filename in your reply.
+
+## When to visualize (and when not to)
+
+This teaching system builds a **dependency graph in the learner's head** — axioms at the root, derived facts hanging off them. A visual is powerful exactly when it makes that structure (or a geometry) visible. Reach for one when:
+
+- The idea is a **structure or relationship**: dependencies, a system with parts and arrows, a flow/pipeline, a sequence of exchanges, a state machine, a tree/hierarchy, a comparison, a containment (what's inside vs outside).
+- The idea is **spatial or geometric**: coordinate geometry, a number line, vectors, a function's shape, a physical arrangement.
+
+Do NOT visualize when prose or a single equation already carries it. A decorative diagram that just restates the sentence next to it adds noise and a chance to be wrong. When in doubt, don't — a missing visual is cheaper than a false one.
+
+## Choose the maker
+
+Two makers, discovered globally from `~/.pi/agent/agents/learn/` by the installed `pi-subagents`. Check `learn_status` first and pass its absolute `outputDirectory` in the brief so published PNGs live inside the linked note's vault. If there is no linked note, output defaults to `<cwd>/viz`; only assume Obsidian can see it when cwd is inside the mounted vault. If `learn_status.fileWritesPaused` is true (Plan mode), do not launch a maker or write artifacts; ask the user to choose `/ask` or `/build` first. Otherwise this skill authorizes these bounded maker delegations only for the requested visual; enable `subagents_enable` if needed and check capabilities before launch.
+
+- **`learn.mermaid-maker`** — structural/relational visuals: dependency graphs, flowcharts, sequence/state/ER/class diagrams, trees, mindmaps, timelines. This is the default and fits the dependency-graph pedagogy directly.
+- **`learn.svg-maker`** — spatial/geometric visuals Mermaid can't lay out: exact coordinates, geometry figures, number lines, vectors, plots, custom shapes.
+
+Rule of thumb: if it's *nodes-and-edges / relationships*, use mermaid-maker. If it's *positions-and-shapes / geometry*, use svg-maker.
+
+## Brief the maker well: one idea, fewest elements
+
+The most common failure is **cramming** — every extra label makes the picture harder to read AND harder to lay out correctly. Before briefing, prune to the fewest elements that carry the idea, and for each ask: *"if I delete this, is the idea still clear?"* If yes, delete it.
+
+Give the maker the concept AND the concrete elements you want — not a vague topic, and not a long checklist.
+
+- BAD: "make a diagram about how TCP works"
+- GOOD: "graph TD: a node 'packet' at the top; arrows down to 'ordering' and 'retransmit on loss'; both arrows down into 'reliable stream'. No title. Show that reliability is built FROM packets, not alongside them."
+
+Keep the idea intact but trust the maker to compose; if your brief lists more than ~5–7 elements, cut it first.
+
+## Invoke
+
+Dispatch the maker with the `subagent` tool:
+
+```
+subagent({ agent: "learn.mermaid-maker", task: "<minimal brief, verification criteria, absolute outputDirectory>", async: true })
+```
+```
+subagent({ agent: "learn.svg-maker", task: "<minimal brief, verification criteria, absolute outputDirectory>", async: true })
+```
+
+The maker owns its own purpose-built tools (`learn_write_*`/`learn_edit_*`/`learn_render_*`) — it authors the source, renders it to a PNG, **looks at the PNG and iterates until it is correct and clean**, publishes it into the vault with a unique filename, and returns:
+
+```
+RESULT:
+filename: viz-<slug>-<timestamp>.png
+path: <outputDirectory>/viz-<slug>-<unique-id>.png
+```
+
+If it returns `RESULT: NONE`, it couldn't make a correct picture of the brief — simplify or rethink, or decide the visual isn't worth it. Never hand-author or fake a diagram yourself; correctness depends on the maker's render-and-inspect loop.
+
+## Embed it in the lesson
+
+Put the embed directly in your teaching reply, using Obsidian's wikilink embed with the returned **filename** (not the full path) and a display width:
+
+```
+![[viz-<slug>-<timestamp>.png|500]]
+```
+
+That's all. The `learn` extension's logger mirrors your reply text verbatim into the linked `.md`, and Obsidian resolves the embed by filename anywhere in the vault (the maker saves into the supplied `outputDirectory` beside the linked note, which must be inside the mounted vault) — so it renders inline in the lesson automatically. Width `|500` is a good default; use larger for dense diagrams. Introduce the visual in a sentence, then let it carry the idea — don't narrate every element back in prose.
+
+## Why this is reliable
+
+- The maker never returns a picture it hasn't **looked at**, so "renders fine but says something false" is caught before it reaches the learner.
+- PNG embed means **what the maker verified is pixel-identical to what the learner sees** — no re-render drift.
+- Unique filenames keep Obsidian's by-filename embed resolution unambiguous.
+
+> Makers load child-only tool extensions explicitly; no second subagent package or global maker tools are installed. Mermaid uses the locked `@mermaid-js/mermaid-cli` and Linux Chromium; SVG uses `rsvg-convert`. If dependencies are missing, report it instead of faking an image. You direct the maker and embed the returned filename after it has inspected the PNG.

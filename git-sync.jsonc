@@ -7,5 +7,7 @@
   // pi-plan-build question dialog never competes with the rpiv ask_user_question
   // tool, the only question tool this setup wants.
   // PI-QUESTION-TOOLS.md documents why that is the only question tool.
-  "extraPaths": ["permissions.jsonc", "PI-PERMISSIONS.md", "keybindings.json", "pi-plan-build.json", "PI-QUESTION-TOOLS.md"]
+  // Custom learning specialists live in agents/; lesson notes and images stay
+  // in the Obsidian vault, never in this config repository.
+  "extraPaths": ["permissions.jsonc", "PI-PERMISSIONS.md", "keybindings.json", "pi-plan-build.json", "PI-QUESTION-TOOLS.md", "agents"]
 }

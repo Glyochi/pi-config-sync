@@ -50,6 +50,17 @@ pi-config-sync.
   `defaultTools: ["-question"]` in `settings.json` would not stick — this file is
   the only lever.
 
+## Graded learning quizzes
+
+The opt-in [learning toolkit](extensions/learn/README.md) adds `learn_quiz`, which is
+not a second preference/question tool: it grades known-right-answer questions
+only during requested lessons. It does **not** install learn's conflicting
+`ask_user_question`, replace rpiv, or change its collapse key. `learn_quiz` uses Pi's
+native `executionMode: sequential`, so the entire mixed quiz/question tool batch
+executes one at a time without an incompatible cross-extension UI mutex.
+Its bounded overlay has its own fixed `Ctrl+]` hide/show key and scrolling.
+The Obsidian logger understands rpiv's multi-question result envelope.
+
 ## Do not reintroduce
 
 Installing `npm:@firstpick/pi-extension-grill-me` again reinstates the bundled

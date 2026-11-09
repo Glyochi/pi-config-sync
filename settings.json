@@ -1,6 +1,6 @@
 {
-  "defaultProvider": "openai",
-  "defaultModel": "gpt-6-sol",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-6.1-sol",
   "packages": [
     "npm:pi-config-sync@0.3.0",
     "npm:pi-toggle-skills@0.1.20",
