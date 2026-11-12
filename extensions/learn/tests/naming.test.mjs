@@ -11,7 +11,7 @@ test("all toolkit commands, tools, and the extension package share the learn pre
 	const f = await load(); t.after(f.close);
 	assert.equal(basename(root), "learn");
 	assert.deepEqual([...f.extension.commands.keys()].sort(), ["learn-doctor", "learn-log", "learn-unlog"]);
-	assert.deepEqual([...f.extension.tools.keys()].sort(), ["learn_quiz", "learn_status"]);
+	assert.deepEqual([...f.extension.tools.keys()].sort(), ["learn_checkpoint", "learn_quiz", "learn_status"]);
 	for (const { definition } of f.extension.tools.values()) assert.ok(definition.label.startsWith("Learn "));
 	const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 	const lock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));

@@ -9,7 +9,7 @@ const call = (f, name, args = {}) => f.tool(name).execute(name, args, new AbortC
 
 test("maker tools load only in the requested child provider", async (t) => {
 	const parent = await load(); t.after(parent.close);
-	assert.deepEqual([...parent.extension.tools.keys()], ["learn_quiz", "learn_status"]);
+	assert.deepEqual([...parent.extension.tools.keys()], ["learn_quiz", "learn_checkpoint", "learn_status"]);
 	const child = await load("visual-tools/svg.ts"); t.after(child.close);
 	assert.deepEqual([...child.extension.tools.keys()], ["learn_write_svg", "learn_edit_svg", "learn_render_svg"]);
 	for (const { definition } of child.extension.tools.values()) assert.equal(definition.executionMode, "sequential");

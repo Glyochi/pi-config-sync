@@ -1,5 +1,6 @@
 // Obsidian formatting, independent of Pi runtime and filesystem state.
-export interface LogBlock { key: string; text: string }
+import { SECTION_ENTRY, readSections, renderSection, type Section } from "./notebook.ts";
+export interface LogBlock { key: string; text: string; id?: string; section?: Section; topicContext?: Section }
 // Read historical quiz results without exposing an unprefixed tool alias.
 export const isQuizTool = (name: string): boolean => name === "learn_quiz" || name === "quiz";
 const record = (value: any): value is Record<string, any> => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -51,26 +52,36 @@ function askAnswer(details: any, failed: boolean): string {
 }
 
 /** Only the active branch is provided by the caller; never traverse abandoned branches. */
-export function branchBlocks(entries: readonly any[]): LogBlock[] {
+export function branchBlocks(entries: readonly any[], note?: string): LogBlock[] {
 	const blocks: LogBlock[] = [];
+	let topicContext: Section | undefined;
+	const push = (block: LogBlock) => blocks.push({ ...block, ...(topicContext ? { topicContext } : {}) });
 	for (const entry of entries) {
+		if (entry.type === "custom" && entry.customType === SECTION_ENTRY && entry.data?.version === 1 && entry.data.file === note) {
+			try {
+				const [section] = readSections(renderSection(entry.data.section));
+				topicContext = section;
+				push({ key: `section:${section.id}`, id: section.id, text: renderSection(section), section });
+			} catch { /* Ignore malformed or foreign-version session annotations. */ }
+			continue;
+		}
 		if (entry.type !== "message" || !record(entry.message)) continue;
 		const message = entry.message;
 		if (message.role === "user" || message.role === "assistant") {
 			const body = messageText(message.content);
-			if (body) blocks.push({ key: `message:${entry.id}`, text: `> [!${message.role === "user" ? "quote" : "abstract"}] ${message.role === "user" ? "YOU" : "PI"}\n\n${body}` });
+			if (body) push({ key: `message:${entry.id}`, text: `> [!${message.role === "user" ? "quote" : "abstract"}] ${message.role === "user" ? "YOU" : "PI"}\n\n${body}` });
 			if (message.role === "assistant") {
 				for (const call of array(message.content)) {
-					if (call?.type === "toolCall" && call.name === "ask_user_question") blocks.push(...askQuestions(call.id, call.arguments));
+					if (call?.type === "toolCall" && call.name === "ask_user_question") askQuestions(call.id, call.arguments).forEach(push);
 				}
 			}
 		} else if (message.role === "toolResult" && isQuizTool(message.toolName)) {
 			// Persisted display order, not the pre-shuffle tool-call arguments.
 			const question = quizQuestion(message.toolCallId, message.details);
-			if (question) blocks.push(question);
-			blocks.push({ key: `quiz:${message.toolCallId}:answer`, text: quizAnswer(message.details, message.isError === true) });
+			if (question) push(question);
+			push({ key: `quiz:${message.toolCallId}:answer`, text: quizAnswer(message.details, message.isError === true) });
 		} else if (message.role === "toolResult" && message.toolName === "ask_user_question") {
-			blocks.push({ key: `ask:${message.toolCallId}:answer`, text: askAnswer(message.details, message.isError === true) });
+			push({ key: `ask:${message.toolCallId}:answer`, text: askAnswer(message.details, message.isError === true) });
 		}
 	}
 	return blocks;

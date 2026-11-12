@@ -10,7 +10,7 @@ disable-model-invocation: true
 
 This is an **explicitly requested learning session**, not the default coding style. Start only when the user invokes this skill or explicitly asks for a structured lesson. Keep the workflow scoped to that lesson; stop or shorten it whenever the user asks. Do not quiz normal coding explanations or treat later unrelated requests as lessons.
 
-- Begin with `learn_status`. Logging is optional: the user links an existing Obsidian note with `/learn-log <path>` and stops with `/learn-unlog`. Never silently create/link a note. Use the returned absolute `outputDirectory` for lesson visuals. If `fileWritesPaused` is true (Plan mode), do not launch makers or write lesson artifacts; explain that `/ask` or `/build` is needed for those effects.
+- Begin with `learn_status`. Logging is optional: the user links an existing Obsidian note with `/learn-log <path>` and stops with `/learn-unlog`. Never silently create/link a lesson log. For linked lessons, this user's requested notebook workflow includes a topic TOC and a per-note progress companion; maintain them as described below. Use the returned absolute `outputDirectory` for lesson visuals. If `fileWritesPaused` is true (Plan mode), do not call `learn_checkpoint`, launch makers, or write lesson artifacts; explain that `/ask` or `/build` is needed for those effects.
 - Keep the existing rpiv `ask_user_question`: it accepts a `questions` array of 1–4 questions, each with a header of at most 16 characters and 2–4 options (labels at most 60 characters, each with a description). It automatically adds a custom-text row. Group preference questions in one call; never install upstream's competing question tool.
 - `learn_quiz` handles graded questions, shuffle-safe answer values, “I don't know”, and optional notes. Use one question at a time, adapting to the answer; never put the answer or explanation in pre-answer prose. It requires Pi's interactive TUI; on other hosts, ask in chat rather than repeatedly calling unavailable UI.
 - In this lesson, this skill authorizes bounded specialist checks with `learn.researcher` and visual work with `learn.mermaid-maker` / `learn.svg-maker` through the existing `pi-subagents` package. Call `subagents_enable` if needed, then list capabilities before a first launch. Use fresh, narrow tasks, inherit the current model, and do not authorize nested delegation. Prefer async work; ordinary async children notify the parent natively.
@@ -20,6 +20,53 @@ This is an **explicitly requested learning session**, not the default coding sty
 Two principles guide the requested lesson: establish foundations the learner accepts, then motivate how the ideas could have been discovered. Scale the lesson to the user's goal and energy.
 
 The goal is never "he can recite the fact." The goal is **understanding**: the fact is derivable from foundations he already accepts, connected into his mental model, and therefore self-preserving. Memorized facts rot. Understood facts don't.
+
+## Topic navigation and durable progress
+
+For a linked lesson, maintain **two complementary views**, not another transcript summary:
+
+- The existing log (for example `basic.md`) keeps the chronological conversation. `learn_checkpoint` adds real numbered topic headings and a generated Obsidian TOC that links to them.
+- Its sibling `basic.goal.md` shows the overall goal, Current topic, next step, evidence-backed topic statuses, and a native fenced Mermaid dependency map. No Obsidian plugin, PNG maker, or additional model call is needed for this map.
+
+This user's request to maintain these views is standing consent for linked, explicitly requested lessons. Do not create either view for an unlinked session or ordinary coding discussion. If another user's instructions do not opt into companion notes, ask before the first `initialize: true`. Linking the raw log still never creates files by itself.
+
+### Resume before re-probing
+
+1. Call `learn_status`, read `progressNote` if it exists, and use its current position and evidence to resume—not restart. Follow topic links into the raw log only for the relevant details. A Completed label is evidence to consider, not a guarantee of permanent mastery.
+2. `progressRevision` is the revision to pass as `expectedRevision` to `learn_checkpoint`. The authoritative state lives in the log's managed TOC; the companion is a derived view. If `progressSummaryOnly` is true, read the managed TOC at `progressStateSource` for full topic IDs, dependencies, and evidence before updating them. Never maintain a separate competing state in prose or a JSON sidecar.
+3. If progress is missing, read enough of the existing log to avoid discarding prior learning. Initialize an evidence-based roadmap once the goal/route is agreed. Do not reorganize old messages without an explicit request to backfill.
+4. If `progressError` or a missing-companion warning is present, report it and fix/relink the note with the user's permission. Do not overwrite an unrecognized companion, remove metadata, or silently recreate a deleted file. With explicit rebuild consent, `rebuildProgressNote: true` and the current `expectedRevision` re-render the companion without changing progress; do not combine it with topic/section updates. For an existing stale view, trust the authoritative `progress` returned by `learn_status` until it is refreshed.
+
+### Checkpoint at conceptual milestones
+
+Use `learn_checkpoint` **before teaching a new major topic**, after confirming a meaningful learning milestone, or when the goal/path changes. Do not checkpoint every message or every quiz.
+
+- Keep stable, lowercase topic IDs and concise plain-language titles. Prefer roughly 8–15 high-level concepts in the roadmap, with prerequisite IDs in `dependsOn`. The graph should explain the route to the user's goal, not enumerate every message or drill.
+- `topics` upserts only changed/new topics; omitted topics, evidence, and prerequisites remain. Set at most one topic to `current`, updating the previous Current status in the same call.
+- `upcoming`: not established yet. `current`: the active learning frontier. `completed`: demonstrated understanding across the relevant checks/reasoning. `review`: a known gap needs revisiting. Do not promote a topic just because you explained it, the user said "I understand," or one easy answer was correct. Record a short, concrete evidence/gap description; distinguish slips, terminology ambiguity, and honest "I don't know" responses.
+- `sections: [{ topic: "topic-id" }]` starts a topic at the end of the log. Related explanations, questions, and quizzes then belong together. Revisit an older topic by starting a new chronological section for that same ID; never move old messages. A title without a topic is available for lesson setup or other non-roadmap discussion.
+- During an explicitly requested historical backfill, read the log and pass section boundaries using `before`, the exact 24-character ID from an existing `<!-- pi-learn:… -->` marker. Supply boundaries in chronological order. Preserve every original message, quiz, marker, and manual note. Do not infer boundaries from dates or split a quiz from its answer.
+- `goal` and `nextStep` should state the destination and the concrete next action. These help a fresh session resume at the right boundary.
+- On a revision conflict, read `learn_status` again and reconcile with the newer state—do not blindly retry stale updates. Do not edit generated regions or topic metadata manually with `write`/`edit` while the logger is active.
+
+Example first checkpoint (only after the route is agreed, with a linked note and creation consent):
+
+```json
+{
+  "expectedRevision": 0,
+  "initialize": true,
+  "goal": "Derive the forward DFT from coefficient-solving algebra",
+  "nextStep": "Discover which sample combinations cancel the other coefficient",
+  "topics": [
+    {"id": "mixtures", "title": "Samples, patterns, and coefficients", "status": "current"},
+    {"id": "cancellation", "title": "Coefficient extraction by cancellation", "status": "upcoming", "dependsOn": ["mixtures"]},
+    {"id": "fourier", "title": "Fourier patterns and the DFT", "status": "upcoming", "dependsOn": ["cancellation"]}
+  ],
+  "sections": [{"topic": "mixtures"}]
+}
+```
+
+Keep this record current **quietly**; the user should see the lesson, not repeated bookkeeping announcements. The table of contents indexes topics already present in the log; future topics belong in the progress map, not broken TOC links. The in-chat lesson plan still needs the user's approval before teaching; a checkpoint does not replace that approval.
 
 ## The philosophy (why this works — internalize it)
 
